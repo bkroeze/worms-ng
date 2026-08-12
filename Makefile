@@ -21,6 +21,7 @@ STORE_BUDGET_BYTES ?= 0
 STORE_REPLAY_BUDGET_NS ?= 250000000
 DB ?= worms.db
 GO_BUILD_FLAGS ?= -trimpath -buildvcs=false
+CLIENT_BUILD_TAGS ?= novulkan
 GO_LDFLAGS ?=
 
 .PHONY: build build-native build-server build-client build-cli build-agent build-wasm wasm-test \
@@ -40,7 +41,7 @@ build-server: build-wasm
 
 build-client:
 	@mkdir -p $(BIN_DIR)
-	$(GO_BUILD) -o $(BIN_DIR)/worms-client ./cmd/worms-client
+	$(GO_BUILD) $(if $(CLIENT_BUILD_TAGS),-tags "$(CLIENT_BUILD_TAGS)") -o $(BIN_DIR)/worms-client ./cmd/worms-client
 
 build-cli:
 	@mkdir -p $(BIN_DIR)

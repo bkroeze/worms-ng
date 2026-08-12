@@ -28,6 +28,9 @@ Linux native builds require the platform development packages used by Gio
 (`pkg-config`, X11/XKB common, Wayland, and EGL headers). Install the equivalent
 packages for the target runner before `make build-native` or
 `make package-native`; cross-compiling still needs these host build dependencies.
+Release builds default to Gio's `novulkan` build tag. Install the target Vulkan
+development headers and set `CLIENT_BUILD_TAGS=` only for packages that should
+include Gio's Vulkan renderer.
 Browser assets are content-addressed (`main-<sha256-prefix>.wasm` and
 `wasm-<sha256-prefix>.js`) and `index.html` references the exact names from the
 same build. The server may cache those immutable names for a year without

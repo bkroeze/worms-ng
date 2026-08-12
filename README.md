@@ -56,7 +56,9 @@ For the normal browser build and server:
 `make build-wasm` runs the pinned `gogio` version through `go run`, so a separate
 Gio installation is not required. Building the optional native Gio client with
 `make build-native` additionally requires `pkg-config` and the platform X11/XKB,
-Wayland, and EGL development headers. SQLite is linked through
+Wayland, and EGL development headers. Native builds default to Gio's `novulkan`
+build tag, so Vulkan headers are not required; install them and set
+`CLIENT_BUILD_TAGS=` to enable Gio's Vulkan renderer. SQLite is linked through
 `modernc.org/sqlite`; the `sqlite3` command is optional.
 
 ## Quick start
