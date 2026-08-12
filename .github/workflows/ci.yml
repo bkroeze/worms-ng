@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  native-tests:
+    name: Native tests and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y pkg-config libx11-dev libxkbcommon-dev libwayland-dev libegl1-mesa-dev
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go mod download
+      - run: make check-import-boundaries
+      - run: make license-audit
+      - run: make build-wasm
+      - run: go test ./...
+      - run: go vet ./...
+      - run: make build-native
+      - run: make metadata VERSION=ci COMMIT="$GITHUB_SHA"
+      - run: make smoke SMOKE_ARTIFACT_DIR=dist/smoke
+      - run: make performance BENCHTIME=100ms BENCH_BUDGET=60s WASM_ARTIFACT_DIR=dist/perf-wasm
+      - run: make reproducible VERSION=ci COMMIT="$GITHUB_SHA" SOURCE_DATE_EPOCH=0
+      - name: Upload native diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-diagnostics
+          path: dist/
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Remove generated outputs
+        if: always()
+        run: make clean
+
+  wasm:
+    name: WASM tests and asset build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: make wasm-test
+      - run: make build-wasm
+      - name: Assert generated versioned client exists
+        run: |
+          test -s cmd/worms-server/web/index.html
+          wasm="$(printf '%s\n' cmd/worms-server/web/main-*.wasm)"
+          loader="$(printf '%s\n' cmd/worms-server/web/wasm-*.js)"
+          test -s "$wasm" && test -s "$loader"
+          grep -Eq 'main-[0-9a-f]{12}\.wasm' cmd/worms-server/web/index.html
+          grep -Eq 'wasm-[0-9a-f]{12}\.js' cmd/worms-server/web/index.html
+      - name: Remove generated outputs
+        if: always()
+        run: make clean
+
+  browser-release-smoke:
+    name: Chromium release smoke (${{ matrix.viewport }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        viewport: [1280x720, 320x480]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go mod download
+      - run: npx --yes agent-browser install --with-deps
+      - run: make browser-smoke BROWSER_VIEWPORT=${{ matrix.viewport }} BROWSER_ARTIFACT_DIR=dist/browser-${{ matrix.viewport }}
+      - name: Upload browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-smoke-${{ matrix.viewport }}
+          path: dist/browser-${{ matrix.viewport }}/
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Remove generated outputs
+        if: always()
+        run: make clean
+
+  native-packages:
+    name: Package ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y pkg-config libx11-dev libxkbcommon-dev libwayland-dev libegl1-mesa-dev
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: make package-native VERSION=ci GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }}
+      - run: make checksums VERSION=ci GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }}
+      - name: Verify package and checksums
+        run: |
+          sha256sum -c dist/SHA256SUMS
+          archive="$(printf '%s\n' dist/*.tar.gz)"
+          test "$(tar -tzf "$archive" | grep -Ec '/?$')" -ge 4
+          for binary in worms-server worms-client wormsctl worms-agent; do
+            tar -tzf "$archive" | grep -qx "$binary"
+          done
+      - name: Remove generated outputs
+        if: always()
+        run: make clean

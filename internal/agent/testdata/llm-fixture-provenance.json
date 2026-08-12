@@ -1,0 +1,11 @@
+{
+  "provider": "fixture-http",
+  "adapter": "openai-compatible",
+  "model": "fixture-v1",
+  "endpoint": "https://fixture",
+  "request_fixture": "llm-decision-request.json",
+  "response_fixture": "llm-decision-response.json",
+  "credentials": "intentionally absent; tests assert redaction",
+  "observation_isolation": "request JSON only; no engine/global state",
+  "seed": 42
+}

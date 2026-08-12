@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "worms.ng/protocol/v1/decision-request",
+  "title": "Worms external-agent decision request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "decision_id", "observation", "deadline"],
+  "properties": {
+    "version": {"const": "v1"},
+    "decision_id": {"type": "string", "minLength": 1},
+    "deadline": {"type": "string", "format": "date-time"},
+    "observation": {"$ref": "#/$defs/observation"}
+  },
+  "$defs": {
+    "position": {"type":"object", "additionalProperties":false, "required":["x","y"], "properties":{"x":{"type":"integer","minimum":1,"maximum":18},"y":{"type":"integer","minimum":1,"maximum":18}}},
+    "neighbor": {"type":"object", "additionalProperties":false, "required":["direction","position","occupied"], "properties":{"direction":{"type":"integer","minimum":0,"maximum":5},"position":{"$ref":"#/$defs/position"},"occupied":{"type":"boolean"}}},
+    "action": {"oneOf":[{"type":"object","additionalProperties":false,"required":["kind","direction"],"properties":{"kind":{"const":"move"},"direction":{"type":"integer","minimum":0,"maximum":5}}},{"type":"object","additionalProperties":false,"required":["kind"],"properties":{"kind":{"const":"resign"}}}]},
+    "observation": {"type":"object", "additionalProperties":false, "required":["version","game_id","worm_id","decision_id","tick","position","orientation","neighbors","trail_states","legal_actions","scores","mode","deadline"], "properties":{"version":{"const":"v1"},"game_id":{"type":"string","minLength":1},"worm_id":{"type":"string","minLength":1},"worm_instance_id":{"type":"string"},"decision_id":{"type":"string","minLength":1},"tick":{"type":"integer","minimum":0},"position":{"$ref":"#/$defs/position"},"orientation":{"type":"integer","minimum":0,"maximum":5},"neighbors":{"type":"array","minItems":6,"maxItems":6,"items":{"$ref":"#/$defs/neighbor"}},"trail_states":{"type":"array","minItems":6,"maxItems":6,"items":{"enum":["empty","own","other"]}},"legal_actions":{"type":"array","minItems":1,"items":{"$ref":"#/$defs/action"}},"scores":{"type":"object","additionalProperties":{"type":"integer"}},"mode":{"type":"string","minLength":1},"deadline":{"type":"string","format":"date-time"},"brain_id":{"type":"string"},"brain_version":{"type":"string"},"pattern_key":{"type":"string"},"provenance":{"type":"object","additionalProperties":{"type":"string"}}}}
+  }
+}

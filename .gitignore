@@ -1,1 +1,31 @@
 .kata.local.toml
+
+# Native and release outputs.
+bin/
+dist/
+*.exe
+worms-server
+worms-client
+wormsctl
+
+# SQLite databases and transient journals.
+worms.db
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+*.sqlite-*
+
+# Generated browser assets (the server embeds these at build time).
+cmd/worms-server/web/index.html
+cmd/worms-server/web/main.wasm
+cmd/worms-server/web/*.wasm
+cmd/worms-server/web/wasm.js
+cmd/worms-server/web/wasm-*.js
+cmd/worms-server/web/wasm_exec.js
+
+# Browser/performance diagnostics and local credentials.
+browser-smoke/
+perf-*/
+*.auth-state.json
