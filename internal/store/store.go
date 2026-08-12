@@ -13,12 +13,12 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	_ "modernc.org/sqlite"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
-
-	_ "modernc.org/sqlite"
+	"worms.ng/internal/extension"
 )
 
 //go:embed migrations/*.sql
@@ -1656,4 +1656,53 @@ func (s *Store) InspectBrainPage(ctx context.Context, brainID, versionID, filter
 		return nil, classify(err, "brain inspection")
 	}
 	return out, nil
+}
+
+// EncodeExtensionSnapshot stores the canonical extension snapshot in the same
+// validated v1 payload envelope used by game snapshots.
+func EncodeExtensionSnapshot(state extension.State) (json.RawMessage, error) {
+	b, err := state.MarshalSnapshot()
+	if err != nil {
+		return nil, err
+	}
+	return EncodeSnapshot(json.RawMessage(b))
+}
+
+func DecodeExtensionSnapshot(raw json.RawMessage) (extension.State, error) {
+	data, err := PayloadData(raw)
+	if err != nil {
+		return extension.State{}, &PayloadError{Err: err}
+	}
+	state, err := extension.UnmarshalSnapshot(data)
+	if err != nil {
+		return extension.State{}, &PayloadError{Err: err}
+	}
+	return state, nil
+}
+
+func (s *Store) SaveExtensionSnapshot(ctx context.Context, gameID string, state extension.State) error {
+	// The engine tick is not the game event cursor: a single move may append
+	// several events. Capture the verified head and write optimistically so a
+	// concurrent event writer cannot leave a stale snapshot behind.
+	g, err := s.GetGame(ctx, gameID)
+	if err != nil {
+		return err
+	}
+	state.GameEventSequence = g.Sequence
+	state.GameEventHash = g.EventHash
+	raw, err := EncodeExtensionSnapshot(state)
+	if err != nil {
+		return err
+	}
+	return s.SaveSnapshotOptimistic(ctx, gameID, g.Sequence, g.EventHash, Snapshot{
+		GameID: gameID, Sequence: g.Sequence, Payload: raw, Hash: hashBytes(raw),
+	})
+}
+
+func (s *Store) LoadExtensionSnapshot(ctx context.Context, gameID string) (extension.State, error) {
+	snap, err := s.LoadLatestVerifiedSnapshot(ctx, gameID)
+	if err != nil {
+		return extension.State{}, err
+	}
+	return DecodeExtensionSnapshot(snap.Payload)
 }

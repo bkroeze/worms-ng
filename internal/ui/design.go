@@ -15,6 +15,7 @@ type designTokens struct {
 	Text, TextMuted, Accent                  color.NRGBA
 	AccentText, Success, Warning             color.NRGBA
 	Danger, Focus, Grid, Disabled            color.NRGBA
+	Obstacle, Hole, Unknown, Weight          color.NRGBA
 	Space1, Space2, Space3                   unit.Dp
 	Space4, Space6, Space8                   unit.Dp
 	RadiusSmall, RadiusMedium                unit.Dp
@@ -41,6 +42,10 @@ var design = designTokens{
 	Focus:         color.NRGBA{R: 0xf5, G: 0xdc, B: 0x84, A: 0xff},
 	Grid:          color.NRGBA{R: 0x24, G: 0x35, B: 0x45, A: 0xff},
 	Disabled:      color.NRGBA{R: 0x5f, G: 0x6d, B: 0x78, A: 0xff},
+	Obstacle:      color.NRGBA{R: 0x78, G: 0x87, B: 0x94, A: 0xff},
+	Hole:          color.NRGBA{R: 0x08, G: 0x0b, B: 0x11, A: 0xff},
+	Unknown:       color.NRGBA{R: 0x2d, G: 0x27, B: 0x38, A: 0xff},
+	Weight:        color.NRGBA{R: 0xe0, G: 0x91, B: 0x62, A: 0xff},
 	Space1:        unit.Dp(4), Space2: unit.Dp(8), Space3: unit.Dp(12),
 	Space4: unit.Dp(16), Space6: unit.Dp(24), Space8: unit.Dp(32),
 	RadiusSmall: unit.Dp(4), RadiusMedium: unit.Dp(8),

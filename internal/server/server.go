@@ -17,11 +17,15 @@ import (
 	"path"
 	"runtime"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"worms.ng/internal/engine"
+	"worms.ng/internal/extension"
+	"worms.ng/internal/planner"
 	"worms.ng/internal/protocol"
+	"worms.ng/internal/sharing"
 	"worms.ng/internal/store"
 )
 
@@ -177,6 +181,8 @@ func (s *Service) route(w http.ResponseWriter, r *http.Request) {
 		s.brainsRoute(w, r, parts[1:])
 	case "brain-versions":
 		s.brainVersionRoute(w, r, parts[1:])
+	case "experiments":
+		s.experimentsRoute(w, r, parts[1:])
 	case "tournaments":
 		s.tournamentsRoute(w, r, parts[1:])
 	case "matches":
@@ -580,18 +586,19 @@ type participantRequest struct {
 	Payload json.RawMessage `json:"payload"`
 }
 type gameRequest struct {
-	Version        string               `json:"version"`
-	ID             string               `json:"id"`
-	BrainVersionID string               `json:"brain_version_id"`
-	Status         string               `json:"status"`
-	Ruleset        string               `json:"ruleset"`
-	Width          int                  `json:"width"`
-	Height         int                  `json:"height"`
-	Rules          json.RawMessage      `json:"rules"`
-	RulesPayload   json.RawMessage      `json:"rules_payload"`
-	Seed           int64                `json:"seed"`
-	Participants   []participantRequest `json:"participants"`
-	State          json.RawMessage      `json:"state"`
+	Version         string               `json:"version"`
+	ID              string               `json:"id"`
+	BrainVersionID  string               `json:"brain_version_id"`
+	Status          string               `json:"status"`
+	Ruleset         string               `json:"ruleset"`
+	Width           int                  `json:"width"`
+	Height          int                  `json:"height"`
+	Rules           json.RawMessage      `json:"rules"`
+	RulesPayload    json.RawMessage      `json:"rules_payload"`
+	ExtensionConfig *extension.Config    `json:"extension_config"`
+	Seed            int64                `json:"seed"`
+	Participants    []participantRequest `json:"participants"`
+	State           json.RawMessage      `json:"state"`
 }
 type gameActionRequest struct {
 	Version         string           `json:"version"`
@@ -662,6 +669,82 @@ func gameJSON(g store.Game) map[string]any {
 	}
 	return map[string]any{"id": g.ID, "name": g.ID, "brain_version_id": g.BrainVersionID, "status": g.Status, "players": len(g.Participants), "tick": g.Sequence, "rules_payload": g.RulesPayload, "seed": g.Seed, "sequence": g.Sequence, "cursor": g.Sequence, "event_hash": g.EventHash, "created_at": g.CreatedAt, "updated_at": g.UpdatedAt, "participants": g.Participants, "scores": scores, "winners": winners, "move_count": g.MoveCount, "event_range": map[string]int64{"from": 1, "to": g.Sequence}}
 }
+
+func configIsClassic(c extension.Config) bool {
+	return !c.Enabled && c.Version == 0 && len(c.Obstacles) == 0 && len(c.Holes) == 0 && len(c.OneWayTrails) == 0 && len(c.Teams) == 0 && len(c.WeightedTerritories) == 0 && c.TemporaryTrailTTL == 0 && c.EnergyLimit == 0 && !c.FogOfWar && c.Width == 0 && c.Height == 0 && c.ObstacleRate == 0 && c.HoleRate == 0
+}
+func gameJSONFor(g store.Game, fog bool) map[string]any {
+	out := gameJSON(g)
+	if fog {
+		delete(out, "rules_payload")
+		delete(out, "seed")
+		if g.Status != "completed" {
+			delete(out, "scores")
+			delete(out, "winners")
+		}
+	}
+	return out
+}
+func publicGameJSON(g store.Game) map[string]any {
+	cfg, extended, _ := extensionConfigFromRules(g.RulesPayload)
+	return gameJSONFor(g, extended && cfg.FogOfWar)
+}
+
+func extensionConfigFromRules(raw []byte) (extension.Config, bool, error) {
+	data := payloadData(raw)
+	var envelope struct {
+		ExtensionConfig *extension.Config `json:"extension_config"`
+		Config          *extension.Config `json:"config"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return extension.Config{}, false, nil
+	}
+	if envelope.ExtensionConfig != nil {
+		return *envelope.ExtensionConfig, !configIsClassic(*envelope.ExtensionConfig), nil
+	}
+	if envelope.Config != nil && !configIsClassic(*envelope.Config) {
+		return *envelope.Config, true, nil
+	}
+	return extension.Config{}, false, nil
+}
+
+func extensionResponse(st extension.State, wormID string) (map[string]any, error) {
+	if wormID == "" {
+		if st.Base.Pending != nil {
+			wormID = st.Base.Pending.WormID
+		} else if st.Base.ActiveSlot >= 0 && st.Base.ActiveSlot < len(st.Base.Worms) {
+			wormID = st.Base.Worms[st.Base.ActiveSlot].ID
+		} else if len(st.Base.Worms) > 0 {
+			wormID = st.Base.Worms[0].ID
+		}
+	}
+	obs, err := st.Observe(wormID)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]any{"config": st.Config, "observation": obs, "team_winners": []string{}}
+	if st.Config.FogOfWar {
+		out["config"] = st.Config.SafeClientConfig()
+	}
+	if st.Base.GameOver {
+		out["team_winners"] = st.TeamWinners()
+	}
+	if st.Base.GameOver {
+		scores := st.Scores()
+		winners := []string{}
+		max := -1
+		for id, score := range scores {
+			if score > max {
+				max, winners = score, []string{id}
+			} else if score == max {
+				winners = append(winners, id)
+			}
+		}
+		sort.Strings(winners)
+		out["scores"], out["winners"] = scores, winners
+	}
+	return out, nil
+}
 func (s *Service) gamesRoute(w http.ResponseWriter, r *http.Request, p []string) {
 	if len(p) == 0 {
 		if r.Method == http.MethodGet {
@@ -699,6 +782,13 @@ func (s *Service) gamesRoute(w http.ResponseWriter, r *http.Request, p []string)
 	case "act", "teach", "pause", "tick":
 		if r.Method == http.MethodPost {
 			s.gameOperation(w, r, id, p[1])
+			return
+		}
+		methodNotAllowed(w, http.MethodPost)
+		return
+	case "plan":
+		if r.Method == http.MethodPost {
+			s.planGame(w, r, id)
 			return
 		}
 		methodNotAllowed(w, http.MethodPost)
@@ -810,7 +900,7 @@ func (s *Service) listGames(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]any, 0, len(gs))
 	for _, g := range gs {
-		out = append(out, gameJSON(g))
+		out = append(out, publicGameJSON(g))
 	}
 	writeVersioned(w, 200, map[string]any{"version": protocol.APIVersion, "games": out, "limit": o.Limit, "offset": o.Offset, "next_offset": o.Offset + len(gs)})
 }
@@ -856,24 +946,109 @@ func (s *Service) createGame(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	cfg := extension.Config{}
+	if in.ExtensionConfig != nil {
+		cfg = *in.ExtensionConfig
+	}
+	base, e := initialEngineState(in.Seed, in.Participants)
+	if e != nil {
+		writeAPIError(w, 400, "invalid_participants", e.Error(), nil)
+		return
+	}
+	width, height := in.Width, in.Height
+	if width == 0 {
+		width = cfg.Width
+	}
+	if height == 0 {
+		height = cfg.Height
+	}
+	if width > 0 || height > 0 {
+		if width == 0 {
+			width = base.Width
+		}
+		if height == 0 {
+			height = base.Height
+		}
+		worms := append([]engine.Worm(nil), base.Worms...)
+		if strings.EqualFold(in.Ruleset, "classic") {
+			base = engine.NewToroidal(width, height, worms)
+		} else {
+			base = engine.New(width, height, worms)
+		}
+	}
+	if in.ExtensionConfig != nil {
+		if cfg.Width == 0 && width > 0 {
+			cfg.Width = width
+		}
+		if cfg.Height == 0 && height > 0 {
+			cfg.Height = height
+		}
+	}
+	if in.ExtensionConfig != nil {
+		cfg = extension.NormalizeConfig(cfg, in.Seed)
+	}
+	var suppliedState json.RawMessage
 	if len(in.State) > 0 {
-		st, e := requestPayload(in.State)
+		st, stateErr := requestPayload(in.State)
+		if stateErr != nil {
+			writeAPIError(w, 400, "invalid_payload", stateErr.Error(), nil)
+			return
+		}
+		suppliedState = payloadData(st)
+		probe, probeErr := engine.UnmarshalSnapshot(suppliedState)
+		if probeErr != nil {
+			extProbe, extErr := extension.UnmarshalSnapshot(suppliedState)
+			if extErr != nil {
+				writeAPIError(w, 400, "invalid_state", "state must be a valid snapshot", nil)
+				return
+			}
+			probe = extProbe.Base
+		}
+		if !validInitialState(probe, in.Participants) {
+			writeAPIError(w, 400, "invalid_state", "state does not match server-created game setup", nil)
+			return
+		}
+		base = probe
+	}
+	var createdExt extension.State
+	var extendedCreation bool
+	if in.ExtensionConfig != nil && !configIsClassic(cfg) {
+		if e = cfg.Validate(base); e != nil {
+			writeAPIError(w, 400, "invalid_extension_config", e.Error(), nil)
+			return
+		}
+		if len(suppliedState) > 0 {
+			if createdExt, e = extension.UnmarshalSnapshot(suppliedState); e != nil {
+				writeAPIError(w, 400, "invalid_state", "extended state must be an extension snapshot", nil)
+				return
+			}
+			cb, _ := json.Marshal(createdExt.Config)
+			want, _ := json.Marshal(cfg)
+			if e = createdExt.Validate(); e != nil || string(cb) != string(want) {
+				writeAPIError(w, 400, "invalid_state", "extension state does not match configuration", nil)
+				return
+			}
+		} else if createdExt, e = extension.New(base, cfg, in.Seed); e != nil {
+			writeAPIError(w, 400, "invalid_extension_config", e.Error(), nil)
+			return
+		}
+		extendedCreation = true
+		extRaw, extErr := createdExt.MarshalSnapshot()
+		if extErr != nil {
+			serverError(w, extErr)
+			return
+		}
+		raw, e = withExtensionConfig(raw, cfg, extRaw)
 		if e != nil {
 			writeAPIError(w, 400, "invalid_payload", e.Error(), nil)
 			return
 		}
-		var d any
-		if e := json.Unmarshal(payloadData(st), &d); e != nil {
-			writeAPIError(w, 400, "invalid_payload", "state must be a valid snapshot", nil)
+	} else if len(suppliedState) > 0 {
+		raw, e = store.EncodePayload(json.RawMessage(suppliedState))
+		if e != nil {
+			writeAPIError(w, 400, "invalid_payload", e.Error(), nil)
 			return
 		}
-		wrapped, _ := store.EncodePayload(d)
-		probe, e := engine.UnmarshalSnapshot(payloadData(wrapped))
-		if e != nil || !validInitialState(probe, in.Participants) {
-			writeAPIError(w, 400, "invalid_state", "state does not match server-created game setup", nil)
-			return
-		}
-		raw = wrapped
 	}
 	participants := make([]store.Participant, 0, len(in.Participants))
 	for _, p := range in.Participants {
@@ -884,7 +1059,15 @@ func (s *Service) createGame(w http.ResponseWriter, r *http.Request) {
 		mapStoreError(w, e)
 		return
 	}
-	writeVersioned(w, 201, map[string]any{"version": protocol.APIVersion, "game": gameJSON(g)})
+	out := map[string]any{"version": protocol.APIVersion, "game": publicGameJSON(g)}
+	if extendedCreation {
+		out["extension"], e = extensionResponse(createdExt, "")
+		if e != nil {
+			mapStoreError(w, e)
+			return
+		}
+	}
+	writeVersioned(w, 201, out)
 }
 func (s *Service) getGame(w http.ResponseWriter, r *http.Request, id string, resume bool) {
 	g, e := s.data.GetGame(r.Context(), id)
@@ -892,14 +1075,36 @@ func (s *Service) getGame(w http.ResponseWriter, r *http.Request, id string, res
 		mapStoreError(w, e)
 		return
 	}
-	out := map[string]any{"version": protocol.APIVersion, "game": gameJSON(g)}
+	out := map[string]any{"version": protocol.APIVersion, "game": publicGameJSON(g)}
+	cfg, extended, cfgErr := extensionConfigFromRules(g.RulesPayload)
+	if cfgErr != nil {
+		mapStoreError(w, cfgErr)
+		return
+	}
 	if resume {
-		st, e := s.loadState(r.Context(), g)
-		if e != nil {
-			mapStoreError(w, e)
-			return
+		var st engine.State
+		if extended {
+			extSt, loadErr := s.loadExtensionState(r.Context(), g, cfg)
+			if loadErr != nil {
+				mapStoreError(w, loadErr)
+				return
+			}
+			st = extSt.Base
+			out["extension"], loadErr = extensionResponse(extSt, r.URL.Query().Get("worm_id"))
+			if loadErr != nil {
+				mapStoreError(w, loadErr)
+				return
+			}
+		} else {
+			st, e = s.loadState(r.Context(), g)
+			if e != nil {
+				mapStoreError(w, e)
+				return
+			}
 		}
-		out["state"] = stateJSON(st)
+		if !extended || !cfg.FogOfWar {
+			out["state"] = stateJSON(st)
+		}
 	}
 	writeVersioned(w, 200, out)
 }
@@ -943,9 +1148,6 @@ func validInitialState(st engine.State, participants []participantRequest) bool 
 }
 func decodePersistedState(raw []byte) (engine.State, error) {
 	data := payloadData(raw)
-	// Match snapshots use the canonical persisted envelope and store the
-	// engine snapshot under "engine"; HTTP-created snapshots may use "state"
-	// or be a direct engine snapshot for backwards compatibility.
 	var env struct {
 		Engine json.RawMessage `json:"engine"`
 		State  json.RawMessage `json:"state"`
@@ -961,7 +1163,199 @@ func decodePersistedState(raw []byte) (engine.State, error) {
 	return engine.UnmarshalSnapshot(data)
 }
 
+func persistedExtensionSnapshot(raw []byte) (extension.State, error) {
+	data := payloadData(raw)
+	var env struct {
+		Extension      json.RawMessage `json:"extension"`
+		ExtensionState json.RawMessage `json:"extension_snapshot"`
+		Engine         json.RawMessage `json:"engine"`
+		State          json.RawMessage `json:"state"`
+	}
+	if json.Unmarshal(data, &env) == nil {
+		switch {
+		case len(env.Extension) > 0:
+			data = env.Extension
+		case len(env.ExtensionState) > 0:
+			data = env.ExtensionState
+		case len(env.State) > 0:
+			data = env.State
+		case len(env.Engine) > 0:
+			data = env.Engine
+		}
+	}
+	return extension.UnmarshalSnapshot(data)
+}
+
+func extensionStateFromRules(raw []byte) (extension.State, error) {
+	data := payloadData(raw)
+	var holder struct {
+		State json.RawMessage `json:"state"`
+	}
+	if json.Unmarshal(data, &holder) != nil || len(holder.State) == 0 {
+		return extension.State{}, store.ErrNotFound
+	}
+	return extension.UnmarshalSnapshot(holder.State)
+}
+
+func stateFromRules(g store.Game) (engine.State, error) {
+	data := payloadData(g.RulesPayload)
+	var holder struct {
+		State json.RawMessage `json:"state"`
+	}
+	if json.Unmarshal(data, &holder) == nil && len(holder.State) > 0 {
+		data = payloadData(holder.State)
+	}
+	return engine.UnmarshalSnapshot(data)
+}
+
+func (s *Service) loadExtensionState(ctx context.Context, g store.Game, cfg extension.Config) (extension.State, error) {
+	if err := s.data.VerifyEventChain(ctx, g.ID); err != nil {
+		return extension.State{}, err
+	}
+	if snap, e := s.data.LoadLatestSnapshot(ctx, g.ID); e == nil && snap.Sequence == g.Sequence {
+		st, decodeErr := persistedExtensionSnapshot(snap.Payload)
+		if decodeErr != nil {
+			return extension.State{}, fmt.Errorf("%w: malformed extension snapshot: %v", store.ErrCorruptEvent, decodeErr)
+		}
+		cb, _ := json.Marshal(st.Config)
+		want, _ := json.Marshal(cfg)
+		if string(cb) != string(want) || st.GameEventSequence > g.Sequence {
+			return extension.State{}, fmt.Errorf("%w: extension snapshot configuration mismatch", store.ErrCorruptEvent)
+		}
+		if err := st.Validate(); err != nil {
+			return extension.State{}, fmt.Errorf("%w: invalid extension snapshot: %v", store.ErrCorruptEvent, err)
+		}
+		return st, nil
+	} else if e != nil && !errors.Is(e, store.ErrNotFound) {
+		return extension.State{}, e
+	}
+	if g.Sequence == 0 {
+		if st, ruleErr := extensionStateFromRules(g.RulesPayload); ruleErr == nil {
+			cb, _ := json.Marshal(st.Config)
+			want, _ := json.Marshal(cfg)
+			if string(cb) != string(want) {
+				return extension.State{}, fmt.Errorf("%w: extension rules configuration mismatch", store.ErrCorruptEvent)
+			}
+			if err := st.Validate(); err != nil {
+				return extension.State{}, fmt.Errorf("%w: invalid initialized extension state: %v", store.ErrCorruptEvent, err)
+			}
+			return st, nil
+		}
+	}
+	base, e := stateFromRules(g)
+	if e != nil {
+		participants := make([]participantRequest, 0, len(g.Participants))
+		for _, p := range g.Participants {
+			participants = append(participants, participantRequest{ID: p.ID, BrainVersionID: p.BrainVersionID, Kind: p.Kind})
+		}
+		base, e = initialEngineState(g.Seed, participants)
+		if e != nil {
+			return extension.State{}, e
+		}
+	}
+	if (cfg.Width > 0 && cfg.Width != base.Width) || (cfg.Height > 0 && cfg.Height != base.Height) {
+		width, height := cfg.Width, cfg.Height
+		if width == 0 {
+			width = base.Width
+		}
+		if height == 0 {
+			height = base.Height
+		}
+		worms := append([]engine.Worm(nil), base.Worms...)
+		base = engine.New(width, height, worms)
+	}
+	if g.Sequence != 0 {
+		return extension.State{}, fmt.Errorf("%w: missing extension snapshot", store.ErrCorruptEvent)
+	}
+	return extension.New(base, cfg, g.Seed)
+}
+
+func initialEngineState(seed int64, participants []participantRequest) (engine.State, error) {
+	worms := make([]engine.Worm, 0, len(participants))
+	for _, p := range participants {
+		w := engine.Worm{ID: p.ID, Alive: true, Color: engine.Color(p.ID), BrainID: p.BrainVersionID}
+		kind := engine.ControllerNew
+		switch strings.ToLower(p.Kind) {
+		case "auto":
+			kind = engine.ControllerAuto
+		case "wild":
+			kind = engine.ControllerWild
+		case "same":
+			kind = engine.ControllerSame
+		case "named", "scripted", "external", "llm":
+			kind = engine.ControllerNamed
+		case "asleep":
+			kind = engine.ControllerAsleep
+		}
+		if err := engine.ConfigureWorm(&w, kind, uint64(seed)); err != nil {
+			return engine.State{}, err
+		}
+		worms = append(worms, w)
+	}
+	return engine.NewClassic(worms), nil
+}
+
+func withExtensionConfig(raw []byte, c extension.Config, state json.RawMessage) (json.RawMessage, error) {
+	data := payloadData(raw)
+	var obj map[string]any
+	if json.Unmarshal(data, &obj) != nil || obj == nil {
+		obj = map[string]any{}
+	}
+	obj["extension_config"] = c
+	if len(state) > 0 {
+		var value any
+		if json.Unmarshal(state, &value) != nil {
+			return nil, errors.New("invalid extension state")
+		}
+		obj["state"] = value
+	}
+	return store.EncodePayload(obj)
+}
+
+func snapshotPayload(st engine.State, ext *extension.State) (json.RawMessage, error) {
+	var baseRaw []byte
+	var err error
+	if ext != nil {
+		ext.Base = st
+		baseRaw, err = st.MarshalSnapshot()
+		if err != nil {
+			return nil, err
+		}
+		extRaw, extErr := ext.MarshalSnapshot()
+		if extErr != nil {
+			return nil, extErr
+		}
+		body, marshalErr := json.Marshal(map[string]any{
+			"version": 1, "engine": json.RawMessage(baseRaw), "extension": json.RawMessage(extRaw),
+		})
+		if marshalErr != nil {
+			return nil, marshalErr
+		}
+		return store.EncodePayload(json.RawMessage(body))
+	}
+	baseRaw, err = st.MarshalSnapshot()
+	if err != nil {
+		return nil, err
+	}
+	body, err := json.Marshal(map[string]any{"version": 1, "engine": json.RawMessage(baseRaw)})
+	if err != nil {
+		return nil, err
+	}
+	return store.EncodePayload(json.RawMessage(body))
+}
+
 func (s *Service) loadState(ctx context.Context, g store.Game) (engine.State, error) {
+	cfg, extended, cfgErr := extensionConfigFromRules(g.RulesPayload)
+	if cfgErr != nil {
+		return engine.State{}, cfgErr
+	}
+	if extended {
+		st, err := s.loadExtensionState(ctx, g, cfg)
+		if err != nil {
+			return engine.State{}, err
+		}
+		return st.Base, nil
+	}
 	if err := s.data.VerifyEventChain(ctx, g.ID); err != nil {
 		return engine.State{}, err
 	}
@@ -1146,6 +1540,19 @@ func (s *Service) gameOperation(w http.ResponseWriter, r *http.Request, id, op s
 		mapStoreError(w, &store.ConflictError{Resource: "game", ID: id, ExpectedSequence: cursor, ActualSequence: g.Sequence, ExpectedHash: eh, ActualHash: g.EventHash})
 		return
 	}
+	cfg, extended, cfgErr := extensionConfigFromRules(g.RulesPayload)
+	if cfgErr != nil {
+		mapStoreError(w, cfgErr)
+		return
+	}
+	var extState extension.State
+	if extended {
+		extState, e = s.loadExtensionState(r.Context(), g, cfg)
+		if e != nil {
+			mapStoreError(w, e)
+			return
+		}
+	}
 	if op == "pause" {
 		status := "paused"
 		if in.Payload != nil {
@@ -1162,15 +1569,34 @@ func (s *Service) gameOperation(w http.ResponseWriter, r *http.Request, id, op s
 			return
 		}
 		g, _ = s.data.GetGame(r.Context(), id)
-		st, stateErr := s.loadState(r.Context(), g)
-		if stateErr != nil {
-			mapStoreError(w, stateErr)
-			return
+		st := extState.Base
+		if !extended {
+			st, e = s.loadState(r.Context(), g)
+			if e != nil {
+				mapStoreError(w, e)
+				return
+			}
 		}
-		writeVersioned(w, 200, map[string]any{"version": protocol.APIVersion, "game": gameJSON(g), "state": stateJSON(st)})
+		out := map[string]any{"version": protocol.APIVersion, "game": publicGameJSON(g)}
+		if !extended || !cfg.FogOfWar {
+			out["state"] = stateJSON(st)
+		}
+		if extended {
+			out["extension"], e = extensionResponse(extState, in.WormID)
+			if e != nil {
+				mapStoreError(w, e)
+				return
+			}
+		}
+		writeVersioned(w, 200, out)
 		return
 	}
-	st, e := s.loadState(r.Context(), g)
+	var st engine.State
+	if extended {
+		st = extState.Base
+	} else {
+		st, e = s.loadState(r.Context(), g)
+	}
 	if e != nil {
 		mapStoreError(w, e)
 		return
@@ -1197,7 +1623,12 @@ func (s *Service) gameOperation(w http.ResponseWriter, r *http.Request, id, op s
 		}
 		if action.Kind == protocol.ActionMove {
 			var ev engine.Event
-			ev, e = st.Step(in.WormID, engine.Direction(action.Direction))
+			if extended {
+				ev, e = extState.Apply(extension.Action{WormID: in.WormID, Direction: engine.Direction(action.Direction)})
+				st = extState.Base
+			} else {
+				ev, e = st.Step(in.WormID, engine.Direction(action.Direction))
+			}
 			if e != nil {
 				writeAPIError(w, 422, "illegal_action", e.Error(), nil)
 				return
@@ -1205,16 +1636,28 @@ func (s *Service) gameOperation(w http.ResponseWriter, r *http.Request, id, op s
 			ep = store.EventInput{Type: "worm_moved", Payload: eventPayload(ev)}
 		} else {
 			st.GameOver = true
+			if extended {
+				extState.Base = st
+			}
 			ep = store.EventInput{Type: "resigned", Payload: eventPayload(map[string]any{"worm_id": in.WormID})}
 		}
 	} else if op == "tick" {
 		var advanced []engine.Event
-		advanced, e = st.AdvanceRound()
+		if extended {
+			advanced, e = extState.AdvanceRound()
+			st = extState.Base
+		} else {
+			advanced, e = st.AdvanceRound()
+		}
 		if e != nil {
 			writeAPIError(w, 422, "tick_failed", e.Error(), nil)
 			return
 		}
-		ep = store.EventInput{Type: "tick", Payload: eventPayload(map[string]any{"events": advanced, "state": stateJSON(st)})}
+		payload := map[string]any{"events": advanced}
+		if !extended {
+			payload["state"] = stateJSON(st)
+		}
+		ep = store.EventInput{Type: "tick", Payload: eventPayload(payload)}
 	} else if op == "teach" {
 		wormID, mask, request, direction, raw, err := teachingDecision(in)
 		if err != nil {
@@ -1233,40 +1676,326 @@ func (s *Service) gameOperation(w http.ResponseWriter, r *http.Request, id, op s
 			writeAPIError(w, 422, "illegal_teach", e.Error(), nil)
 			return
 		}
+		if extended {
+			extState.Base = st
+		}
 		ep = store.EventInput{Type: "taught", Payload: raw}
 	} else {
 		writeAPIError(w, 400, "invalid_operation", "unsupported game operation", nil)
 		return
 	}
-	b, e := st.MarshalSnapshot()
+	snap, e := snapshotPayload(st, func() *extension.State {
+		if extended {
+			return &extState
+		}
+		return nil
+	}())
 	if e != nil {
 		serverError(w, e)
 		return
 	}
-	snapBody, e := json.Marshal(map[string]any{"version": 1, "engine": json.RawMessage(b)})
-	if e != nil {
-		serverError(w, e)
-		return
-	}
-	snap, e := store.EncodePayload(json.RawMessage(snapBody))
-	if e != nil {
-		serverError(w, e)
-		return
-	}
+
 	events, e := s.data.AppendGameEventsWithSnapshot(r.Context(), id, cursor, eh, []store.EventInput{ep}, store.Snapshot{GameID: id, Sequence: cursor + 1, Payload: snap})
-	if e != nil {
-		mapStoreError(w, e)
-		return
-	}
-	g, _ = s.data.GetGame(r.Context(), id)
 	if st.GameOver {
-		if e = s.persistAuthoritativeResults(r.Context(), g, st); e != nil {
+		if extended {
+			if e = s.persistAuthoritativeExtensionResults(r.Context(), g, &extState); e != nil {
+				serverError(w, e)
+				return
+			}
+		} else if e = s.persistAuthoritativeResults(r.Context(), g, st); e != nil {
 			serverError(w, e)
 			return
 		}
 		g, _ = s.data.GetGame(r.Context(), id)
 	}
-	writeVersioned(w, 200, map[string]any{"version": protocol.APIVersion, "game": gameJSON(g), "events": events, "state": stateJSON(st)})
+	g, _ = s.data.GetGame(r.Context(), id)
+	out := map[string]any{"version": protocol.APIVersion, "game": publicGameJSON(g), "events": events}
+	if !extended || !cfg.FogOfWar {
+		out["state"] = stateJSON(st)
+	}
+	if extended {
+		out["extension"], e = extensionResponse(extState, in.WormID)
+		if e != nil {
+			mapStoreError(w, e)
+			return
+		}
+	}
+	writeVersioned(w, 200, out)
+}
+
+type planRequest struct {
+	Version         string         `json:"version"`
+	Cursor          *int64         `json:"cursor"`
+	Sequence        *int64         `json:"sequence"`
+	ExpectedCursor  *int64         `json:"expected_cursor"`
+	ExpectedVersion *int64         `json:"expected_version"`
+	EventHash       string         `json:"event_hash"`
+	WormID          string         `json:"worm_id"`
+	Config          planner.Config `json:"config"`
+	PlannerConfig   planner.Config `json:"planner_config"`
+	Teach           bool           `json:"teach"`
+}
+
+func (s *Service) planGame(w http.ResponseWriter, r *http.Request, id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g, e := s.data.GetGame(r.Context(), id)
+	if e != nil {
+		mapStoreError(w, e)
+		return
+	}
+	var in planRequest
+	if e = s.readJSON(r, &in); e != nil {
+		writeAPIError(w, 400, "invalid_json", e.Error(), nil)
+		return
+	}
+	if e = versionOK(in.Version); e != nil {
+		writeAPIError(w, 400, "invalid_version", e.Error(), nil)
+		return
+	}
+	actionReq := gameActionRequest{Version: in.Version, Cursor: in.Cursor, Sequence: in.Sequence, ExpectedCursor: in.ExpectedCursor, ExpectedVersion: in.ExpectedVersion, EventHash: in.EventHash}
+	cursor, eh, e := expectedCursor(&actionReq, r, g)
+	if e != nil {
+		writeAPIError(w, 400, "invalid_cursor", e.Error(), nil)
+		return
+	}
+	if cursor != g.Sequence || eh != g.EventHash {
+		mapStoreError(w, &store.ConflictError{Resource: "game", ID: id, ExpectedSequence: cursor, ActualSequence: g.Sequence, ExpectedHash: eh, ActualHash: g.EventHash})
+		return
+	}
+	cfg, extended, cfgErr := extensionConfigFromRules(g.RulesPayload)
+	if cfgErr != nil {
+		mapStoreError(w, cfgErr)
+		return
+	}
+	var extSt extension.State
+	var st engine.State
+	if extended {
+		extSt, e = s.loadExtensionState(r.Context(), g, cfg)
+		st = extSt.Base
+	} else {
+		st, e = s.loadState(r.Context(), g)
+	}
+	if e != nil {
+		mapStoreError(w, e)
+		return
+	}
+	if st.Pending == nil || st.Pending.WormID == "" {
+		writeAPIError(w, 409, "no_pending_decision", "planner is only available for a pending unknown decision", nil)
+		return
+	}
+	if in.WormID == "" {
+		in.WormID = st.Pending.WormID
+	}
+	if in.WormID != st.Pending.WormID {
+		writeAPIError(w, 409, "pending_mismatch", "worm_id does not match pending decision", nil)
+		return
+	}
+	pc := in.PlannerConfig
+	if pc.Version == 0 && pc.Mode == "" && in.Config.Version != 0 {
+		pc = in.Config
+	}
+	p, e := planner.New(pc)
+	if e != nil {
+		writeAPIError(w, 400, "invalid_planner_config", e.Error(), nil)
+		return
+	}
+	normalizedPC := p.Config()
+	if extended && cfg.FogOfWar && (normalizedPC.Capabilities.GlobalState || normalizedPC.Capabilities.Observation == planner.GlobalObservation) {
+		writeAPIError(w, 400, "planner_visibility", "global planner capability is unavailable under fog of war", nil)
+		return
+	}
+	decision, e := p.Plan(st, in.WormID)
+	if e != nil {
+		writeAPIError(w, 409, "planner_unavailable", e.Error(), nil)
+		return
+	}
+	if extended {
+		legal := false
+		for _, d := range extSt.LegalMoves(in.WormID) {
+			if d == engine.Direction(decision.Action) {
+				legal = true
+				break
+			}
+		}
+		if !legal {
+			writeAPIError(w, 409, "planner_unavailable", "planner selected a move disallowed by extension rules", nil)
+			return
+		}
+	}
+	out := map[string]any{"version": protocol.APIVersion, "decision": decision, "alternatives": decision.Alternatives, "provenance": decision.Provenance, "game": publicGameJSON(g)}
+	if !in.Teach {
+		writeVersioned(w, 200, out)
+		return
+	}
+	pendingRequest := st.Pending.Request
+	if extended {
+		if _, e = extSt.Submit(engine.Direction(decision.Action)); e != nil {
+			writeAPIError(w, 422, "planner_teach_failed", e.Error(), nil)
+			return
+		}
+		st = extSt.Base
+	} else if _, e = p.Teach(&st, in.WormID); e != nil {
+		writeAPIError(w, 422, "planner_teach_failed", e.Error(), nil)
+		return
+	}
+	payload := eventPayload(map[string]any{"worm_id": decision.WormID, "mask": decision.Mask, "request": pendingRequest, "direction": int(decision.Action)})
+	snap, e := snapshotPayload(st, func() *extension.State {
+		if extended {
+			return &extSt
+		}
+		return nil
+	}())
+	if e != nil {
+		serverError(w, e)
+		return
+	}
+	events, e := s.data.AppendGameEventsWithSnapshot(r.Context(), id, cursor, eh, []store.EventInput{{Type: "taught", Payload: payload}}, store.Snapshot{GameID: id, Sequence: cursor + 1, Payload: snap})
+	if e != nil {
+		mapStoreError(w, e)
+		return
+	}
+	g, _ = s.data.GetGame(r.Context(), id)
+	out["game"], out["events"] = publicGameJSON(g), events
+	if !extended || !cfg.FogOfWar {
+		out["state"] = stateJSON(st)
+	}
+	if extended {
+		out["extension"], e = extensionResponse(extSt, in.WormID)
+		if e != nil {
+			mapStoreError(w, e)
+			return
+		}
+	}
+	writeVersioned(w, 200, out)
+}
+
+type shareRequest struct {
+	Version            string           `json:"version"`
+	Config             sharing.Config   `json:"config"`
+	SharingConfig      sharing.Config   `json:"sharing_config"`
+	TargetBrainID      string           `json:"target_brain_id"`
+	RecipientBrainID   string           `json:"recipient_brain_id"`
+	BrainID            string           `json:"brain_id"`
+	RecipientVersionID string           `json:"recipient_version_id"`
+	SourceVersionIDs   []string         `json:"source_version_ids"`
+	Sources            []sharing.Source `json:"sources"`
+}
+
+func (s *Service) experimentsRoute(w http.ResponseWriter, r *http.Request, p []string) {
+	if len(p) == 1 && p[0] == "share" && r.Method == http.MethodPost {
+		s.shareExperiment(w, r)
+		return
+	}
+	if len(p) == 1 && p[0] == "share" {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	writeAPIError(w, http.StatusNotFound, "not_found", "endpoint not found", nil)
+}
+
+func (s *Service) shareExperiment(w http.ResponseWriter, r *http.Request) {
+	var in shareRequest
+	if e := s.readJSON(r, &in); e != nil {
+		writeAPIError(w, 400, "invalid_json", e.Error(), nil)
+		return
+	}
+	if e := versionOK(in.Version); e != nil {
+		writeAPIError(w, 400, "invalid_version", e.Error(), nil)
+		return
+	}
+	cfg := in.SharingConfig
+	if cfg.Policy == "" {
+		cfg = in.Config
+	}
+	if len(cfg.Sources) == 0 {
+		cfg.Sources = append([]sharing.Source(nil), in.Sources...)
+	}
+	for i, id := range in.SourceVersionIDs {
+		if i < len(cfg.Sources) {
+			cfg.Sources[i].BrainVersionID = id
+		} else {
+			cfg.Sources = append(cfg.Sources, sharing.Source{WormID: "source-" + strconv.Itoa(i), BrainVersionID: id})
+		}
+	}
+	target := in.TargetBrainID
+	if target == "" {
+		target = in.RecipientBrainID
+	}
+	if target == "" {
+		target = in.BrainID
+	}
+	if in.RecipientVersionID != "" {
+		v, e := s.data.GetBrainVersion(r.Context(), in.RecipientVersionID)
+		if e != nil {
+			mapStoreError(w, e)
+			return
+		}
+		if target != "" && target != v.BrainID {
+			writeAPIError(w, 400, "invalid_request", "recipient version does not belong to target brain", nil)
+			return
+		}
+		target = v.BrainID
+	}
+	if target == "" {
+		writeAPIError(w, 400, "invalid_request", "target brain is required", nil)
+		return
+	}
+	for i := range cfg.Sources {
+		if cfg.Sources[i].BrainVersionID == "" {
+			continue
+		}
+		v, e := s.data.GetBrainVersion(r.Context(), cfg.Sources[i].BrainVersionID)
+		if e != nil {
+			mapStoreError(w, e)
+			return
+		}
+		cfg.Sources[i].Rules = append(json.RawMessage(nil), v.Rules.Payload...)
+	}
+	out, e := sharing.DeriveFromStore(r.Context(), s.data, cfg)
+	if e != nil {
+		if errors.Is(e, sharing.ErrInvalid) || errors.Is(e, sharing.ErrMissing) {
+			writeAPIError(w, 400, "invalid_sharing_config", e.Error(), nil)
+		} else {
+			mapStoreError(w, e)
+		}
+		return
+	}
+	persistOut := out
+	if in.RecipientVersionID != "" {
+		matches := make([]sharing.Derived, 0, 1)
+		for _, d := range out.Derived {
+			if d.Lineage.RecipientVersionID == in.RecipientVersionID || d.Recipient.BrainVersionID == in.RecipientVersionID {
+				matches = append(matches, d)
+			}
+		}
+		if len(matches) != 1 {
+			writeAPIError(w, 400, "invalid_request", "recipient version must identify exactly one derived recipient", nil)
+			return
+		}
+		persistOut.Derived = matches
+	} else if len(out.Derived) != 1 {
+		writeAPIError(w, 400, "invalid_request", "recipient version is required when sharing has multiple recipients", nil)
+		return
+	}
+	versions, e := persistOut.Persist(r.Context(), s.data, target)
+	if e != nil {
+		mapStoreError(w, e)
+		return
+	}
+	metrics := map[string]any{"derived": len(out.Derived), "versions": len(versions), "changes": 0, "additions": 0, "removals": 0}
+	provenance := make([]sharing.Provenance, 0, len(out.Derived))
+	for _, d := range out.Derived {
+		metrics["changes"] = metrics["changes"].(int) + len(d.Changes)
+		metrics["additions"] = metrics["additions"].(int) + len(d.Additions)
+		metrics["removals"] = metrics["removals"].(int) + len(d.Removals)
+		provenance = append(provenance, d.Provenance)
+	}
+	versionJSONs := make([]any, 0, len(versions))
+	for _, v := range versions {
+		versionJSONs = append(versionJSONs, versionJSON(v))
+	}
+	writeVersioned(w, 200, map[string]any{"version": protocol.APIVersion, "policy": out.Policy, "seed": out.Seed, "hash": out.Hash, "derived": out.Derived, "brain_versions": versionJSONs, "metrics": metrics, "provenance": provenance})
 }
 
 func brainJSON(b store.Brain) map[string]any {
@@ -1289,6 +2018,22 @@ func (s *Service) persistAuthoritativeResults(ctx context.Context, g store.Game,
 		scores[w.ID] = int64(w.Score)
 	}
 	for _, ev := range st.Events {
+		if ev.Type == "worm_moved" || ev.Type == "worm_move" {
+			moves++
+		}
+	}
+	return s.data.CompleteGame(ctx, g.ID, "completed", g.Sequence, g.EventHash, scores, moves)
+}
+func (s *Service) persistAuthoritativeExtensionResults(ctx context.Context, g store.Game, ext *extension.State) error {
+	if ext == nil || !ext.Base.GameOver {
+		return nil
+	}
+	scores := make(map[string]int64, len(ext.Variant.Scores))
+	for id, score := range ext.Variant.Scores {
+		scores[id] = int64(score)
+	}
+	moves := int64(0)
+	for _, ev := range ext.Base.Events {
 		if ev.Type == "worm_moved" || ev.Type == "worm_move" {
 			moves++
 		}

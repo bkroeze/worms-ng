@@ -111,6 +111,44 @@ func TestGameContractAndRestartResume(t *testing.T) {
 	}
 }
 
+func TestOptionalExtensionRestartAndFogContract(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "extension.sqlite")
+	svc, err := Open(db, testAssets())
+	if err != nil {
+		t.Fatal(err)
+	}
+	post := func(service *Service, path, body string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		service.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+	create := `{"version":"v1","id":"fog-game","participants":[{"id":"w1","kind":"human"}],"extension_config":{"version":1,"enabled":true,"obstacles":[{"q":1,"r":1}],"fog_of_war":true,"visibility_radius":1,"energy_limit":3}}`
+	if rec := post(svc, "/api/v1/games", create); rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"observation"`) {
+		t.Fatalf("create extension status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec := post(svc, "/api/v1/games/fog-game/act", `{"version":"v1","cursor":0,"worm_id":"w1","direction":0}`); rec.Code != http.StatusOK {
+		t.Fatalf("extension act status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if err := svc.Close(); err != nil {
+		t.Fatal(err)
+	}
+	svc, err = Open(db, testAssets())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	rec := httptest.NewRecorder()
+	svc.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/games/fog-game/resume", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"team_winners"`) || strings.Contains(rec.Body.String(), `"variant"`) {
+		t.Fatalf("fog resume status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec := post(svc, "/api/v1/games/fog-game/act", `{"version":"v1","cursor":0,"worm_id":"w1","direction":1}`); rec.Code != http.StatusConflict {
+		t.Fatalf("stale extension act status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestBrainTournamentContracts(t *testing.T) {
 	svc, err := Open(":memory:", testAssets())
 	if err != nil {

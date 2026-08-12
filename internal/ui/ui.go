@@ -37,6 +37,7 @@ const (
 	navGames
 	navBrains
 	navTournament
+	navExperiments
 	navButtonCount
 )
 
@@ -45,6 +46,7 @@ const (
 	focusNavGames       = "nav.games"
 	focusNavBrains      = "nav.brains"
 	focusNavTournament  = "nav.tournament"
+	focusNavExperiments = "nav.experiments"
 	focusNavHealth      = "nav.health"
 	focusSetupSlots     = "setup.slots"
 	focusSetupWidth     = "setup.width"
@@ -56,12 +58,20 @@ const (
 	focusGrid           = "play.grid"
 	focusFlash          = "play.flash"
 	focusMotion         = "play.motion"
+	focusPlanTeach      = "play.plan-teach"
+	focusPlan           = "play.plan"
 	focusInspectID      = "inspect.id"
 	focusInspectVersion = "inspect.version"
 	focusInspectFilter  = "inspect.filter"
 	focusInspectGo      = "inspect.go"
 	focusInspectPrev    = "inspect.prev"
 	focusInspectNext    = "inspect.next"
+	focusSharePolicy    = "share.policy"
+	focusShareRecipient = "share.recipient"
+	focusShareSources   = "share.sources"
+	focusShareSeed      = "share.seed"
+	focusShareNoise     = "share.noise"
+	focusShareRun       = "share.run"
 )
 
 type Shell struct {
@@ -73,6 +83,7 @@ type Shell struct {
 	refresh, play, start widget.Clickable
 	games, brains        widget.Clickable
 	tournament, inspect  widget.Clickable
+	experiments          widget.Clickable
 	setupSlots           widget.Clickable
 	setupWidth           widget.Clickable
 	setupHeight          widget.Clickable
@@ -86,6 +97,7 @@ type Shell struct {
 	slotStartY           [4]widget.Clickable
 	pause, grid, flash   widget.Clickable
 	motion               widget.Clickable
+	planTeach, plan      widget.Clickable
 	directions           [6]widget.Clickable
 	inspectID            widget.Clickable
 	inspectVersion       widget.Clickable
@@ -93,9 +105,15 @@ type Shell struct {
 	inspectPrev          widget.Clickable
 	inspectNext          widget.Clickable
 	activeBrain          widget.Clickable
+	sharePolicy          widget.Clickable
+	shareRecipient       widget.Clickable
+	shareSources         widget.Clickable
+	shareSeed            widget.Clickable
+	shareNoise           widget.Clickable
+	shareRun             widget.Clickable
 
-	gamesList, brainsList, inspectorList, tournamentList, setupList widget.List
-	gameClicks, brainClicks, ruleClicks                             []widget.Clickable
+	gamesList, brainsList, inspectorList, tournamentList, setupList, shareList widget.List
+	gameClicks, brainClicks, ruleClicks                                        []widget.Clickable
 
 	keyTag, pointerTag                          struct{}
 	focused                                     string
@@ -122,6 +140,7 @@ func NewShell(baseURL string) *Shell {
 	s.inspectorList.Axis = layout.Vertical
 	s.tournamentList.Axis = layout.Vertical
 	s.setupList.Axis = layout.Vertical
+	s.shareList.Axis = layout.Vertical
 	return s
 }
 
@@ -321,6 +340,14 @@ func (s *Shell) transformFocusedText(v *AppView, transform func(string) string) 
 	case focusInspectFilter:
 		v.Inspect.Filter = transform(v.Inspect.Filter)
 		v.Inspect.Offset = 0
+	case focusShareRecipient:
+		v.Share.RecipientVersionID = transform(v.Share.RecipientVersionID)
+	case focusShareSources:
+		v.Share.SourceVersionIDs = transform(v.Share.SourceVersionIDs)
+	case focusShareSeed:
+		v.Share.Seed = transform(v.Share.Seed)
+	case focusShareNoise:
+		v.Share.NoiseRate = transform(v.Share.NoiseRate)
 	default:
 		for i := range v.Setup.Slots {
 			switch s.focused {
@@ -346,11 +373,15 @@ func parsedInt(value string) int {
 func (s *Shell) applyEditedView(v AppView) {
 	s.Model.SetSetup(v.Setup)
 	s.Model.SetInspectorQuery(v.Inspect)
+	s.Model.SetShare(v.Share)
 	s.requestFrame()
 }
 
 func (s *Shell) isEditableFocus() bool {
-	if s.focused == focusSetupSeed || s.focused == focusSetupWidth || s.focused == focusSetupHeight || s.focused == focusInspectID || s.focused == focusInspectVersion || s.focused == focusInspectFilter {
+	switch s.focused {
+	case focusSetupSeed, focusSetupWidth, focusSetupHeight,
+		focusInspectID, focusInspectVersion, focusInspectFilter,
+		focusShareRecipient, focusShareSources, focusShareSeed, focusShareNoise:
 		return true
 	}
 	return strings.HasPrefix(s.focused, "setup.slot.") && !strings.HasSuffix(s.focused, ".controller")
@@ -364,7 +395,7 @@ func ruleFocus(index int) string               { return fmt.Sprintf("inspect.rul
 
 func (s *Shell) focusOrder() []string {
 	v := s.Model.Snapshot()
-	order := []string{focusNavPlay, focusNavGames, focusNavBrains, focusNavTournament, focusNavHealth}
+	order := []string{focusNavPlay, focusNavGames, focusNavBrains, focusNavTournament, focusNavExperiments, focusNavHealth}
 	switch v.Screen {
 	case ScreenSetup:
 		order = append(order, focusSetupSlots, focusSetupWidth, focusSetupHeight, focusSetupRules, focusSetupSeed)
@@ -374,6 +405,9 @@ func (s *Shell) focusOrder() []string {
 		order = append(order, focusSetupStart)
 	case ScreenPlay:
 		order = append(order, focusPause, focusGrid, focusFlash, focusMotion)
+		if v.Board.Pending != nil {
+			order = append(order, focusPlanTeach, focusPlan)
+		}
 		for i := range 6 {
 			order = append(order, directionFocus(i))
 		}
@@ -391,6 +425,8 @@ func (s *Shell) focusOrder() []string {
 		for i := range len(inspectorRules(v.Inspector)) {
 			order = append(order, ruleFocus(i))
 		}
+	case ScreenExperiments:
+		order = append(order, focusSharePolicy, focusShareRecipient, focusShareSources, focusShareSeed, focusShareNoise, focusShareRun)
 	case ScreenError:
 		order = append(order, focusNavHealth)
 	}
@@ -440,17 +476,15 @@ func (s *Shell) activateFocus() {
 	case focusNavTournament:
 		s.Model.Navigate(ScreenTournament)
 		go s.loadTournament()
+	case focusNavExperiments:
+		s.Model.Navigate(ScreenExperiments)
 	case focusNavHealth:
 		go s.retry(v.Error.Retry)
 	case focusSetupSlots:
 		v.Setup.SlotCount = v.Setup.SlotCount%4 + 1
 		s.Model.SetSetup(v.Setup)
 	case focusSetupRules:
-		if v.Setup.Ruleset == "classic" {
-			v.Setup.Ruleset = "modern"
-		} else {
-			v.Setup.Ruleset = "classic"
-		}
+		v.Setup.Ruleset = nextRuleset(v.Setup.Ruleset)
 		s.Model.SetSetup(v.Setup)
 	case focusSetupStart:
 		go s.startGame()
@@ -462,6 +496,17 @@ func (s *Shell) activateFocus() {
 		s.Model.ToggleFlash()
 	case focusMotion:
 		s.Model.ToggleReducedMotion()
+	case focusPlanTeach:
+		s.Model.SetPlannerTeach(!v.Planner.Teach)
+	case focusPlan:
+		if v.Board.Pending != nil {
+			go s.planPending()
+		}
+	case focusSharePolicy:
+		v.Share.Policy = nextSharingPolicy(v.Share.Policy)
+		s.Model.SetShare(v.Share)
+	case focusShareRun:
+		go s.runShareExperiment()
 	case focusInspectGo:
 		go s.loadInspector()
 	case focusInspectPrev:
@@ -567,6 +612,10 @@ func (s *Shell) handleNavClicks(gtx layout.Context) {
 		s.Model.Navigate(ScreenTournament)
 		go s.loadTournament()
 	}
+	if clickedBeforeLayout(gtx, &s.experiments) && s.acceptNavClick(navExperiments, &s.experiments) {
+		s.focused = focusNavExperiments
+		s.Model.Navigate(ScreenExperiments)
+	}
 }
 
 func (s *Shell) acceptNavClick(index int, button *widget.Clickable) bool {
@@ -598,7 +647,7 @@ func (s *Shell) replayLayoutClicks(gtx layout.Context) {
 	buttons := [...]struct {
 		index  int
 		button *widget.Clickable
-	}{{navRefresh, &s.refresh}, {navPlay, &s.play}, {navGames, &s.games}, {navBrains, &s.brains}, {navTournament, &s.tournament}}
+	}{{navRefresh, &s.refresh}, {navPlay, &s.play}, {navGames, &s.games}, {navBrains, &s.brains}, {navTournament, &s.tournament}, {navExperiments, &s.experiments}}
 	replayed := false
 	for _, item := range buttons {
 		if s.consumeNavPress(item.index, item.button) {
@@ -671,6 +720,9 @@ func (s *Shell) navAxis(gtx layout.Context, axis layout.Axis) layout.Dimensions 
 		}),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return s.button(gtx, &s.tournament, "tournament", focusNavTournament, true)
+		}),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return s.button(gtx, &s.experiments, "experiments", focusNavExperiments, true)
 		}),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return s.button(gtx, &s.refresh, "health", focusNavHealth, true)
@@ -756,6 +808,8 @@ func (s *Shell) screen(gtx layout.Context, v AppView) layout.Dimensions {
 		return s.inspectScreen(gtx, v)
 	case ScreenTournament:
 		return s.tournamentScreen(gtx, v)
+	case ScreenExperiments:
+		return s.experimentScreen(gtx, v)
 	case ScreenError:
 		return s.errorScreen(gtx, v)
 	default:
@@ -779,11 +833,7 @@ func (s *Shell) setupScreen(gtx layout.Context, v AppView) layout.Dimensions {
 	s.processFieldClick(gtx, &s.setupHeight, focusSetupHeight)
 	if s.setupRules.Clicked(gtx) {
 		s.focused = focusSetupRules
-		if v.Setup.Ruleset == "classic" {
-			v.Setup.Ruleset = "modern"
-		} else {
-			v.Setup.Ruleset = "classic"
-		}
+		v.Setup.Ruleset = nextRuleset(v.Setup.Ruleset)
 		s.Model.SetSetup(v.Setup)
 	}
 	s.processFieldClick(gtx, &s.setupSeed, focusSetupSeed)
@@ -804,14 +854,22 @@ func (s *Shell) setupScreen(gtx layout.Context, v AppView) layout.Dimensions {
 		go s.startGame()
 	}
 	v = s.Model.Snapshot()
+	heading := "Configure a classic arena"
+	guidance := "One to four stable slots; asleep slots remain visible but do not act."
+	if v.Setup.Ruleset == "modern" {
+		heading = "Configure a bounded arena"
+	} else if strings.HasPrefix(v.Setup.Ruleset, "variants-") {
+		heading = "Configure an extension arena"
+		guidance = "Preset rules are explicit and opt-in; classic games keep their original wire path."
+	}
 	items := 3 + v.Setup.SlotCount
 	return s.setupList.Layout(gtx, items, func(gtx layout.Context, index int) layout.Dimensions {
 		return layout.Inset{Right: design.Space3, Bottom: design.Space3}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 			switch index {
 			case 0:
 				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-					layout.Rigid(material.H3(s.theme, "Configure a classic arena").Layout),
-					layout.Rigid(material.Body1(s.theme, "One to four stable slots; asleep slots remain visible but do not act.").Layout),
+					layout.Rigid(material.H3(s.theme, heading).Layout),
+					layout.Rigid(material.Body1(s.theme, guidance).Layout),
 				)
 			case 1:
 				return responsiveStrip(gtx, []layout.FlexChild{
@@ -1083,6 +1141,56 @@ func directionName(direction int) string {
 	return "none"
 }
 
+var sharingPolicies = [...]string{"none", "same_team", "all_worms", "seeded_noisy"}
+
+func nextSharingPolicy(current string) string {
+	for i, policy := range sharingPolicies {
+		if policy == current {
+			return sharingPolicies[(i+1)%len(sharingPolicies)]
+		}
+	}
+	return sharingPolicies[0]
+}
+
+func variantHUDLabel(v AppView) string {
+	parts := make([]string, 0, 3)
+	if v.HUD.HasEnergy {
+		parts = append(parts, fmt.Sprintf("ENERGY %d", v.HUD.Energy))
+	}
+	if v.HUD.Team != "" {
+		parts = append(parts, fmt.Sprintf("TEAM %s · score %d", v.HUD.Team, v.HUD.TeamScore))
+	}
+	if v.Board.UnknownCount > 0 {
+		parts = append(parts, fmt.Sprintf("FOG %d unknown cells", v.Board.UnknownCount))
+	}
+	return strings.Join(parts, " · ")
+}
+
+func scoreHUDLabel(score ScoreView) string {
+	state := "alive"
+	if !score.Alive {
+		state = "DEAD"
+	} else if score.Asleep {
+		state = "ASLEEP"
+	}
+	active := ""
+	if score.Active {
+		active = " ACTIVE"
+	}
+	if score.Team == "" {
+		return fmt.Sprintf("■ %s [%s%s] %d · %s", score.Name, state, active, score.Score, score.Controller)
+	}
+	return fmt.Sprintf("WORM ■ %s [%s%s] %d · %s · TEAM %s", score.Name, state, active, score.Score, score.Controller, score.Team)
+}
+
+func plannerAlternativeLabel(alternative PlannerAlternative) string {
+	state := "candidate"
+	if alternative.Chosen {
+		state = "CHOSEN"
+	}
+	return fmt.Sprintf("%s %s · total %d · capture %d · border %d · survival %d · %s", state, directionName(alternative.Action), alternative.Total, alternative.Capture, alternative.Border, alternative.Survival, alternative.Reason)
+}
+
 func (s *Shell) tournamentScreen(gtx layout.Context, v AppView) layout.Dimensions {
 	count := len(v.Tournaments) + len(v.Matches)
 	if count == 0 {
@@ -1101,6 +1209,86 @@ func (s *Shell) tournamentScreen(gtx layout.Context, v AppView) layout.Dimension
 			})
 		}),
 	)
+}
+
+func (s *Shell) experimentScreen(gtx layout.Context, v AppView) layout.Dimensions {
+	if s.sharePolicy.Clicked(gtx) {
+		s.focused = focusSharePolicy
+		v.Share.Policy = nextSharingPolicy(v.Share.Policy)
+		s.Model.SetShare(v.Share)
+	}
+	s.processFieldClick(gtx, &s.shareRecipient, focusShareRecipient)
+	s.processFieldClick(gtx, &s.shareSources, focusShareSources)
+	s.processFieldClick(gtx, &s.shareSeed, focusShareSeed)
+	s.processFieldClick(gtx, &s.shareNoise, focusShareNoise)
+	if s.shareRun.Clicked(gtx) && !v.Share.Running {
+		s.focused = focusShareRun
+		go s.runShareExperiment()
+	}
+	v = s.Model.Snapshot()
+	return s.shareList.Layout(gtx, 4, func(gtx layout.Context, index int) layout.Dimensions {
+		return layout.Inset{Right: design.Space3, Bottom: design.Space3}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			switch index {
+			case 0:
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					layout.Rigid(material.H3(s.theme, "Rule-sharing experiment").Layout),
+					layout.Rigid(material.Body1(s.theme, "Derive an immutable brain version from explicit source versions; originals are never mutated.").Layout),
+				)
+			case 1:
+				return responsiveStrip(gtx, []layout.FlexChild{
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return s.button(gtx, &s.sharePolicy, "policy: "+v.Share.Policy, focusSharePolicy, true)
+					}),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return s.field(gtx, &s.shareRecipient, "recipient version ID", v.Share.RecipientVersionID, focusShareRecipient, "")
+					}),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return s.field(gtx, &s.shareSources, "source version IDs (comma separated)", v.Share.SourceVersionIDs, focusShareSources, "")
+					}),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return s.field(gtx, &s.shareSeed, "seed", v.Share.Seed, focusShareSeed, "")
+					}),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return s.field(gtx, &s.shareNoise, "noise rate 0–1", v.Share.NoiseRate, focusShareNoise, "")
+					}),
+				})
+			case 2:
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						label := "run sharing experiment"
+						if v.Share.Running {
+							label = "experiment running…"
+						}
+						return s.button(gtx, &s.shareRun, label, focusShareRun, !v.Share.Running)
+					}),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						if v.Share.Error == "" {
+							return layout.Dimensions{}
+						}
+						style := material.Body2(s.theme, "Experiment error: "+v.Share.Error)
+						style.Color = design.Danger
+						return style.Layout(gtx)
+					}),
+				)
+			default:
+				if v.Share.Result == nil {
+					return s.emptyState(gtx, "No experiment result yet", "Choose a recipient and at least one source version, then run the experiment.")
+				}
+				result := v.Share.Result
+				versionLabel := fmt.Sprintf("%d immutable versions persisted", len(result.BrainVersions))
+				if len(result.BrainVersions) > 0 {
+					version := result.BrainVersions[0]
+					versionLabel = fmt.Sprintf("%s · brain %s · version %d", version.ID, version.BrainID, version.Version)
+				}
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					layout.Rigid(material.H5(s.theme, "Derived immutable version").Layout),
+					layout.Rigid(material.Body1(s.theme, versionLabel).Layout),
+					layout.Rigid(material.Body2(s.theme, fmt.Sprintf("%s · %d derived · %d versions · %d changes · +%d / −%d", result.Policy, result.Metrics.Derived, result.Metrics.Versions, result.Metrics.Changes, result.Metrics.Additions, result.Metrics.Removals)).Layout),
+					layout.Rigid(material.Body2(s.theme, "result hash "+result.Hash).Layout),
+				)
+			}
+		})
+	})
 }
 
 func (s *Shell) errorScreen(gtx layout.Context, v AppView) layout.Dimensions {
@@ -1149,6 +1337,14 @@ func (s *Shell) hud(gtx layout.Context, v AppView) layout.Dimensions {
 		s.focused = focusMotion
 		s.Model.ToggleReducedMotion()
 	}
+	if s.planTeach.Clicked(gtx) {
+		s.focused = focusPlanTeach
+		s.Model.SetPlannerTeach(!v.Planner.Teach)
+	}
+	if s.plan.Clicked(gtx) && v.Board.Pending != nil {
+		s.focused = focusPlan
+		go s.planPending()
+	}
 	for i := range s.directions {
 		if s.directions[i].Clicked(gtx) {
 			s.focused = directionFocus(i)
@@ -1196,27 +1392,31 @@ func (s *Shell) hud(gtx layout.Context, v AppView) layout.Dimensions {
 			)
 		}),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			label := variantHUDLabel(v)
+			if label == "" {
+				return layout.Dimensions{}
+			}
+			style := material.Label(s.theme, design.TypeMeta, label)
+			style.Color = design.Warning
+			return layout.Inset{Bottom: design.Space1}.Layout(gtx, style.Layout)
+		}),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			children := make([]layout.FlexChild, 0, len(v.HUD.Scores))
 			for _, score := range v.HUD.Scores {
 				score := score
 				children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					state := "alive"
-					if !score.Alive {
-						state = "DEAD"
-					} else if score.Asleep {
-						state = "ASLEEP"
-					}
-					active := ""
-					if score.Active {
-						active = " ACTIVE"
-					}
-					label := fmt.Sprintf("■ %s [%s%s] %d · %s", score.Name, state, active, score.Score, score.Controller)
-					style := material.Label(s.theme, design.TypeMeta, label)
+					style := material.Label(s.theme, design.TypeMeta, scoreHUDLabel(score))
 					style.Color = rgba(score.Color)
 					return layout.Inset{Right: design.Space3}.Layout(gtx, style.Layout)
 				}))
 			}
-			if v.Board.GameOver && v.HUD.Tie && len(v.HUD.Scores) > 0 {
+			if v.Board.GameOver && len(v.HUD.Winners) > 0 {
+				label := "WINNER: "
+				if len(v.HUD.Winners) > 1 {
+					label = "WINNERS: "
+				}
+				children = append(children, layout.Rigid(material.Body2(s.theme, label+strings.Join(v.HUD.Winners, " + ")).Layout))
+			} else if v.Board.GameOver && v.HUD.Tie && len(v.HUD.Scores) > 0 {
 				leaders := make([]string, 0, len(v.HUD.Scores))
 				for _, score := range v.HUD.Scores {
 					if score.Score == v.HUD.Scores[0].Score {
@@ -1225,17 +1425,50 @@ func (s *Shell) hud(gtx layout.Context, v AppView) layout.Dimensions {
 				}
 				children = append(children, layout.Rigid(material.Body2(s.theme, "TIED WINNERS: "+strings.Join(leaders, " + ")).Layout))
 			}
+			if v.Board.GameOver && len(v.HUD.TeamWinners) > 0 {
+				children = append(children, layout.Rigid(material.Body2(s.theme, "TEAM WINNERS: "+strings.Join(v.HUD.TeamWinners, " + ")).Layout))
+			}
 			return responsiveStrip(gtx, children)
 		}),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			prompt := "Choose a legal direction"
+			if v.Board.GameOver {
+				prompt = "Game complete · legal moves closed"
+			}
 			if v.Board.Pending != nil {
 				prompt = fmt.Sprintf("Teach %s · exact request %d · mask %06b", v.Board.Pending.WormID, v.Board.Pending.Request, v.Board.Pending.Mask)
 			}
-			children := make([]layout.FlexChild, 0, len(directionNames))
+			sections := []layout.FlexChild{layout.Rigid(material.Body2(s.theme, prompt).Layout)}
+			if v.Board.Pending != nil {
+				sections = append(sections, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return responsiveStrip(gtx, []layout.FlexChild{
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							label := map[bool]string{true: "planner: teach chosen rule", false: "planner: preview only"}[v.Planner.Teach]
+							return s.button(gtx, &s.planTeach, label, focusPlanTeach, true)
+						}),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return s.button(gtx, &s.plan, "plan alternatives", focusPlan, !v.HUD.Paused)
+						}),
+					})
+				}))
+			}
+			if v.Planner.Error != "" {
+				style := material.Body2(s.theme, "Planner error: "+v.Planner.Error)
+				style.Color = design.Danger
+				sections = append(sections, layout.Rigid(style.Layout))
+			}
+			if v.Planner.Decision != nil {
+				for _, alternative := range v.Planner.Decision.Alternatives {
+					alternative := alternative
+					sections = append(sections, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return material.Label(s.theme, design.TypeSmall, plannerAlternativeLabel(alternative)).Layout(gtx)
+					}))
+				}
+			}
+			directions := make([]layout.FlexChild, 0, len(directionNames))
 			for i, name := range directionNames {
 				i, name := i, name
-				children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				directions = append(directions, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					label := name
 					if !v.Board.Legal[i] {
 						label += " · blocked"
@@ -1243,10 +1476,8 @@ func (s *Shell) hud(gtx layout.Context, v AppView) layout.Dimensions {
 					return s.button(gtx, &s.directions[i], label, directionFocus(i), v.Board.Legal[i] && !v.HUD.Paused && !v.Board.GameOver)
 				}))
 			}
-			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-				layout.Rigid(material.Body2(s.theme, prompt).Layout),
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions { return responsiveStrip(gtx, children) }),
-			)
+			sections = append(sections, layout.Rigid(func(gtx layout.Context) layout.Dimensions { return responsiveStrip(gtx, directions) }))
+			return layout.Flex{Axis: layout.Vertical}.Layout(gtx, sections...)
 		}),
 	)
 }
@@ -1265,9 +1496,23 @@ func (s *Shell) board(gtx layout.Context, v AppView) layout.Dimensions {
 	if v.Toggles.Grid {
 		for y := range g.Height {
 			for x := range g.Width {
-				FillTerritory(gtx.Ops, g, Point{X: x, Y: y}, packed(design.Grid))
+				point := Point{X: x, Y: y}
+				if v.Board.FogOfWar && !v.Board.Visible[point] {
+					continue
+				}
+				FillTerritory(gtx.Ops, g, point, packed(design.Grid))
 			}
 		}
+	}
+	for point := range v.Board.Unknown {
+		if !g.InBounds(point) {
+			continue
+		}
+		FillTerritory(gtx.Ops, g, point, packed(design.Unknown))
+		center := g.DotAt(point)
+		radius := g.DotRadius * .3
+		stroke(gtx.Ops, f32.Pt(center.X-radius, center.Y-radius), f32.Pt(center.X+radius, center.Y+radius), packed(design.TextMuted), float32(gtx.Dp(design.Border)))
+		stroke(gtx.Ops, f32.Pt(center.X-radius, center.Y+radius), f32.Pt(center.X+radius, center.Y-radius), packed(design.TextMuted), float32(gtx.Dp(design.Border)))
 	}
 	for p, c := range v.Board.Territory {
 		if !g.InBounds(p) {
@@ -1275,6 +1520,37 @@ func (s *Shell) board(gtx layout.Context, v AppView) layout.Dimensions {
 		}
 		FillTerritory(gtx.Ops, g, p, c)
 		ownerCue(gtx.Ops, g, p, v.Board.TerritoryOwners[p])
+	}
+	for point := range v.Board.Obstacles {
+		if !g.InBounds(point) || !v.Board.Visible[point] {
+			continue
+		}
+		FillTerritory(gtx.Ops, g, point, packed(design.Obstacle))
+		center := g.DotAt(point)
+		for _, offset := range [...]float32{-.25, 0, .25} {
+			stroke(gtx.Ops, f32.Pt(center.X-g.DotRadius*.45, center.Y+g.DotRadius*offset), f32.Pt(center.X+g.DotRadius*.45, center.Y+g.DotRadius*offset), packed(design.Canvas), float32(gtx.Dp(design.Border)))
+		}
+	}
+	for point := range v.Board.Holes {
+		if !g.InBounds(point) || !v.Board.Visible[point] {
+			continue
+		}
+		FillTerritory(gtx.Ops, g, point, packed(design.Hole))
+		center := g.DotAt(point)
+		radius := g.DotRadius * .45
+		stroke(gtx.Ops, f32.Pt(center.X-radius, center.Y-radius), f32.Pt(center.X+radius, center.Y+radius), packed(design.Danger), float32(gtx.Dp(design.FocusBorder)))
+		stroke(gtx.Ops, f32.Pt(center.X-radius, center.Y+radius), f32.Pt(center.X+radius, center.Y-radius), packed(design.Danger), float32(gtx.Dp(design.FocusBorder)))
+	}
+	for point, weight := range v.Board.Weights {
+		if !g.InBounds(point) || !v.Board.Visible[point] {
+			continue
+		}
+		center := g.DotAt(point)
+		count := min(weight, 3)
+		for i := range count {
+			offset := (float32(i) - float32(count-1)/2) * g.DotRadius * .25
+			stroke(gtx.Ops, f32.Pt(center.X+offset, center.Y-g.DotRadius*.3), f32.Pt(center.X+offset, center.Y+g.DotRadius*.3), packed(design.Weight), float32(gtx.Dp(design.FocusBorder)))
+		}
 	}
 	for _, trail := range v.Board.Trails {
 		halves := EndpointHalfSegments(trail.A, trail.B, trail.AColor, trail.BColor, g)
@@ -1524,7 +1800,7 @@ func (s *Shell) startGame() {
 		participants = append(participants, ParticipantRequest{ID: slot.ID, Name: slot.Name, Kind: slot.Controller, BrainVersionID: slot.BrainID, Color: slot.Color, Start: &start, Payload: payloadEnvelope(map[string]any{"start": start, "asleep": slot.Controller == ControllerAsleep})})
 	}
 	rules := payloadEnvelope(map[string]any{"ruleset": setup.Ruleset, "width": setup.Width, "height": setup.Height})
-	game, _, err := s.Client.CreateGame(ctx, CreateGameRequest{ID: id, Status: "active", Ruleset: setup.Ruleset, Width: setup.Width, Height: setup.Height, RulesPayload: rules, Seed: setup.ResolvedSeed, Participants: participants})
+	game, _, err := s.Client.CreateGame(ctx, CreateGameRequest{ID: id, Status: "active", Ruleset: setup.Ruleset, Width: setup.Width, Height: setup.Height, RulesPayload: rules, Seed: setup.ResolvedSeed, Participants: participants, ExtensionConfig: setup.ExtensionPreset()})
 	if err != nil {
 		s.Model.SetGameError(fmt.Errorf("create game: %w", err))
 		s.requestFrame()
@@ -1558,6 +1834,97 @@ func (s *Shell) resumeGame(id string) {
 	s.Model.SetGame(id, response)
 	persistGame(id)
 	s.scheduler.Reset()
+	s.requestFrame()
+}
+
+func (s *Shell) planPending() {
+	if !s.actionInFlight.CompareAndSwap(false, true) {
+		return
+	}
+	defer s.finishAction()
+	view := s.Model.Snapshot()
+	if view.Board.Pending == nil || view.GameID == "" || view.HUD.Paused || view.Board.GameOver {
+		return
+	}
+	config := view.Planner.Config
+	if config.Seed == 0 {
+		config.Seed = view.Setup.ResolvedSeed
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	result, _, err := s.Client.Plan(ctx, view.GameID, PlanRequest{Cursor: view.GameCursor, EventHash: view.EventHash, WormID: view.Board.Pending.WormID, PlannerConfig: config, Teach: view.Planner.Teach})
+	if err != nil {
+		s.Model.SetPlannerResult(PlannerDecision{}, nil, fmt.Errorf("plan pending decision: %w", err))
+		s.requestFrame()
+		return
+	}
+	var applied *GameResponse
+	if view.Planner.Teach && result.Game.ID != "" {
+		response := result.GameResponse
+		applied = &response
+	}
+	s.Model.SetPlannerResult(result.Decision, applied, nil)
+	s.scheduler.Reset()
+	s.requestFrame()
+}
+
+func (s *Shell) runShareExperiment() {
+	view := s.Model.Snapshot()
+	share := view.Share
+	if share.Running {
+		return
+	}
+	share.Running, share.Error, share.Result = true, "", nil
+	s.Model.SetShare(share)
+	s.requestFrame()
+	recipient := strings.TrimSpace(share.RecipientVersionID)
+	rawSources := strings.Split(share.SourceVersionIDs, ",")
+	sources := make([]string, 0, len(rawSources))
+	seen := make(map[string]bool, len(rawSources)+1)
+	seen[recipient] = recipient != ""
+	for _, value := range rawSources {
+		value = strings.TrimSpace(value)
+		if value != "" && !seen[value] {
+			seen[value] = true
+			sources = append(sources, value)
+		}
+	}
+	seed, seedErr := strconv.ParseInt(strings.TrimSpace(share.Seed), 10, 64)
+	noise, noiseErr := strconv.ParseFloat(strings.TrimSpace(share.NoiseRate), 64)
+	if recipient == "" || len(sources) == 0 || seedErr != nil || noiseErr != nil || noise < 0 || noise > 1 {
+		share.Running = false
+		share.Error = "Recipient, source IDs, a whole-number seed, and a noise rate from 0 to 1 are required."
+		s.Model.SetShare(share)
+		s.requestFrame()
+		return
+	}
+	allVersionIDs := make([]string, 0, len(sources)+1)
+	allVersionIDs = append(allVersionIDs, recipient)
+	allVersionIDs = append(allVersionIDs, sources...)
+	configSources := make([]SharingSource, 0, len(allVersionIDs))
+	for i, versionID := range allVersionIDs {
+		wormID := fmt.Sprintf("source-%d", i)
+		if i == 0 {
+			wormID = "recipient"
+		}
+		configSources = append(configSources, SharingSource{WormID: wormID, BrainVersionID: versionID})
+	}
+	request := ShareExperimentRequest{
+		SharingConfig:      SharingConfig{Policy: share.Policy, Seed: seed, NoiseRate: noise, Sources: configSources},
+		RecipientVersionID: recipient,
+		SourceVersionIDs:   allVersionIDs,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	result, _, err := s.Client.ShareExperiment(ctx, request)
+	share.Running = false
+	if err != nil {
+		share.Error = err.Error()
+	} else {
+		share.Result = &result
+		share.Error = ""
+	}
+	s.Model.SetShare(share)
 	s.requestFrame()
 }
 

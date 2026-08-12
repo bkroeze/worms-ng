@@ -21,6 +21,7 @@ const (
 	ScreenBrains
 	ScreenInspector
 	ScreenTournament
+	ScreenExperiments
 	ScreenError
 )
 
@@ -38,6 +39,8 @@ func (s Screen) String() string {
 		return "inspector"
 	case ScreenTournament:
 		return "tournament"
+	case ScreenExperiments:
+		return "experiments"
 	case ScreenError:
 		return "error"
 	}
@@ -55,6 +58,17 @@ const (
 
 var controllerKinds = [...]string{ControllerNew, ControllerAuto, ControllerWild, ControllerSame, ControllerNamed, ControllerAsleep}
 var directionNames = [...]string{"E", "SE", "SW", "W", "NW", "NE"}
+
+var rulesetPresets = [...]string{"classic", "modern", "variants-terrain", "variants-trails", "variants-teams-fog"}
+
+func nextRuleset(current string) string {
+	for i, preset := range rulesetPresets {
+		if current == preset {
+			return rulesetPresets[(i+1)%len(rulesetPresets)]
+		}
+	}
+	return rulesetPresets[0]
+}
 
 type SetupSlot struct {
 	ID, Name, Controller, BrainID, Color string
@@ -108,8 +122,15 @@ func (s SetupConfig) Validate() (SetupConfig, bool) {
 	} else {
 		s.ResolvedSeed = seed
 	}
-	if s.Ruleset != "classic" && s.Ruleset != "modern" {
-		s.Errors["ruleset"] = "Ruleset must be classic or modern."
+	validRuleset := false
+	for _, preset := range rulesetPresets {
+		validRuleset = validRuleset || s.Ruleset == preset
+	}
+	if !validRuleset {
+		s.Errors["ruleset"] = "Choose a supported rules preset."
+	}
+	if s.Ruleset == "variants-teams-fog" && s.SlotCount < 2 {
+		s.Errors["slots"] = "Team fog needs at least two slots."
 	}
 	seenIDs := make(map[string]bool, s.SlotCount)
 	seenStarts := make(map[Point]bool, s.SlotCount)
@@ -146,6 +167,31 @@ func (s SetupConfig) Validate() (SetupConfig, bool) {
 	return s, len(s.Errors) == 0
 }
 
+func (s SetupConfig) ExtensionPreset() *ExtensionConfig {
+	if s.Ruleset == "classic" || s.Ruleset == "modern" {
+		return nil
+	}
+	config := &ExtensionConfig{Version: 1, Enabled: true, Width: s.Width, Height: s.Height, Seed: s.ResolvedSeed}
+	switch s.Ruleset {
+	case "variants-terrain":
+		config.ObstacleRate = 12
+		config.HoleRate = 4
+		config.WeightedTerritories = []ExtensionWeight{{Point: StatePoint{Q: s.Width / 2, R: s.Height / 2}, Weight: 3}}
+	case "variants-trails":
+		config.TemporaryTrailTTL = 8
+		config.EnergyLimit = 24
+	case "variants-teams-fog":
+		config.EnergyLimit = 24
+		config.FogOfWar = true
+		config.VisibilityRadius = 2
+		config.Teams = make(map[string]string, s.SlotCount)
+		for i := range s.SlotCount {
+			config.Teams[s.Slots[i].ID] = fmt.Sprintf("team-%d", i%2+1)
+		}
+	}
+	return config
+}
+
 func (s *SetupConfig) fitStarts() {
 	corners := [4]Point{{1, 1}, {s.Width, s.Height}, {s.Width, 1}, {1, s.Height}}
 	for i := range s.Slots {
@@ -156,11 +202,11 @@ func (s *SetupConfig) fitStarts() {
 type ToggleState struct{ Grid, Flash, ReducedMotion bool }
 
 type WormView struct {
-	ID, Name, Controller, BrainID string
-	Position                      Point
-	Color                         uint32
-	Score                         int
-	Alive, Asleep, Active         bool
+	ID, Name, Controller, BrainID, Team string
+	Position                            Point
+	Color                               uint32
+	Score                               int
+	Alive, Asleep, Active               bool
 }
 
 type DecisionView struct {
@@ -183,28 +229,41 @@ type BoardView struct {
 	Trails          []Trail
 	Territory       map[Point]uint32
 	TerritoryOwners map[Point]string
+	Visible         map[Point]bool
+	Unknown         map[Point]bool
+	Obstacles       map[Point]bool
+	Holes           map[Point]bool
+	Weights         map[Point]int
 	Tick, Round     uint64
 	ActiveWorm      string
 	Legal           [6]bool
 	Pending         *DecisionView
 	GameOver        bool
+	FogOfWar        bool
+	UnknownCount    int
 	Provenance      StateProvenance
 	Capture         CaptureView
 }
 
 type HUDView struct {
-	Paused bool
-	Speed  int
-	Status string
-	Scores []ScoreView
-	Tie    bool
+	Paused      bool
+	Speed       int
+	Status      string
+	Scores      []ScoreView
+	Winners     []string
+	Tie         bool
+	Energy      int
+	HasEnergy   bool
+	TeamScore   int
+	Team        string
+	TeamWinners []string
 }
 
 type ScoreView struct {
-	ID, Name, Controller, BrainID string
-	Score                         int
-	Color                         uint32
-	Alive, Asleep, Active         bool
+	ID, Name, Controller, BrainID, Team string
+	Score                               int
+	Color                               uint32
+	Alive, Asleep, Active               bool
 }
 
 type ErrorView struct {
@@ -215,6 +274,21 @@ type InspectorQuery struct {
 	BrainID, Version, Filter string
 	Offset, Limit            int
 	Error                    string
+}
+
+type PlannerView struct {
+	Config   PlannerConfig
+	Teach    bool
+	Decision *PlannerDecision
+	Error    string
+}
+
+type ShareExperimentView struct {
+	Policy, RecipientVersionID, SourceVersionIDs string
+	Seed, NoiseRate                              string
+	Result                                       *ShareExperimentResponse
+	Error                                        string
+	Running                                      bool
 }
 
 type AppView struct {
@@ -234,6 +308,8 @@ type AppView struct {
 	Setup       SetupConfig
 	Board       BoardView
 	HUD         HUDView
+	Planner     PlannerView
+	Share       ShareExperimentView
 	Toggles     ToggleState
 	Error       ErrorView
 }
@@ -244,7 +320,9 @@ type Model struct {
 }
 
 func NewModel() *Model {
-	return &Model{view: AppView{Screen: ScreenSetup, Setup: defaultSetup(), Inspect: InspectorQuery{Limit: 12}, HUD: HUDView{Speed: 5}, Toggles: ToggleState{Grid: true}}}
+	planner := PlannerConfig{Version: 1, Mode: "greedy", Depth: 1, CaptureWeight: 100, BorderWeight: 1, SurvivalWeight: 1, Capabilities: PlannerCapabilities{Observation: "local"}}
+	share := ShareExperimentView{Policy: "all_worms", Seed: "1", NoiseRate: "0"}
+	return &Model{view: AppView{Screen: ScreenSetup, Setup: defaultSetup(), Inspect: InspectorQuery{Limit: 12}, HUD: HUDView{Speed: 5}, Planner: PlannerView{Config: planner}, Share: share, Toggles: ToggleState{Grid: true}}}
 }
 
 // Snapshot is allocation-free. Published slices and maps are immutable:
@@ -267,12 +345,24 @@ func cloneView(v AppView) AppView {
 	v.Board.Trails = append([]Trail(nil), v.Board.Trails...)
 	v.Board.Territory = copyTerritory(v.Board.Territory)
 	v.Board.TerritoryOwners = copyOwners(v.Board.TerritoryOwners)
+	v.Board.Visible = copyPointBools(v.Board.Visible)
+	v.Board.Unknown = copyPointBools(v.Board.Unknown)
+	v.Board.Obstacles = copyPointBools(v.Board.Obstacles)
+	v.Board.Holes = copyPointBools(v.Board.Holes)
+	v.Board.Weights = copyPointInts(v.Board.Weights)
 	v.Board.Capture.Points = copyTerritory(v.Board.Capture.Points)
 	if v.Board.Pending != nil {
 		pending := *v.Board.Pending
 		v.Board.Pending = &pending
 	}
 	v.HUD.Scores = append([]ScoreView(nil), v.HUD.Scores...)
+	v.HUD.Winners = append([]string(nil), v.HUD.Winners...)
+	v.HUD.TeamWinners = append([]string(nil), v.HUD.TeamWinners...)
+	if v.Planner.Decision != nil {
+		decision := *v.Planner.Decision
+		decision.Alternatives = append([]PlannerAlternative(nil), decision.Alternatives...)
+		v.Planner.Decision = &decision
+	}
 	return v
 }
 
@@ -303,6 +393,28 @@ func copyOwners(in map[Point]string) map[Point]string {
 	out := make(map[Point]string, len(in))
 	for k, v := range in {
 		out[k] = v
+	}
+	return out
+}
+
+func copyPointBools(in map[Point]bool) map[Point]bool {
+	if in == nil {
+		return nil
+	}
+	out := make(map[Point]bool, len(in))
+	for point, value := range in {
+		out[point] = value
+	}
+	return out
+}
+
+func copyPointInts(in map[Point]int) map[Point]int {
+	if in == nil {
+		return nil
+	}
+	out := make(map[Point]int, len(in))
+	for point, value := range in {
+		out[point] = value
 	}
 	return out
 }
@@ -411,7 +523,7 @@ func (m *Model) SetGame(id string, response GameResponse) {
 		m.view.GameCursor = response.Game.Sequence
 	}
 	m.view.EventHash = response.Game.EventHash
-	board := BoardFromState(response.State)
+	board := BoardFromGameResponse(response)
 	enrichBoard(&board, response.Game.Participants)
 	if oldGameID == id && old.Tick < board.Tick {
 		board.Capture = capturedDiff(old, board, response.Events)
@@ -419,7 +531,24 @@ func (m *Model) SetGame(id string, response GameResponse) {
 	m.view.Board = board
 	m.view.HUD.Paused = response.Game.Status == "paused"
 	m.view.HUD.Scores, m.view.HUD.Tie = RankedScores(board.Worms)
+	m.view.HUD.Winners = nil
 	m.view.HUD.Status = authoritativeStatus(response.Game, board)
+	m.view.HUD.Energy, m.view.HUD.HasEnergy = 0, false
+	m.view.HUD.TeamScore, m.view.HUD.Team = 0, ""
+	m.view.HUD.TeamWinners = nil
+	if response.Extension != nil {
+		observation := response.Extension.Observation
+		if observation.Energy != nil {
+			m.view.HUD.Energy, m.view.HUD.HasEnergy = *observation.Energy, true
+		}
+		m.view.HUD.TeamScore = observation.TeamScore
+		m.view.HUD.Team = response.Extension.Config.Teams[observation.WormID]
+		m.view.HUD.TeamWinners = append([]string(nil), response.Extension.TeamWinners...)
+		if board.GameOver && len(response.Extension.Scores) > 0 {
+			m.view.HUD.Scores, m.view.HUD.Tie = rankedExtensionScores(response.Extension.Scores, response.Game.Participants, response.Extension.Config.Teams)
+			m.view.HUD.Winners = extensionWinnerNames(response.Extension.Winners, response.Game.Participants)
+		}
+	}
 	m.view.Screen = ScreenPlay
 	m.view.Error = ErrorView{}
 	m.mu.Unlock()
@@ -552,6 +681,102 @@ func BoardFromState(st GameState) BoardView {
 		out.Pending = pending
 	}
 	return out
+}
+
+func BoardFromGameResponse(response GameResponse) BoardView {
+	if response.Extension == nil {
+		return BoardFromState(response.State)
+	}
+	extension := response.Extension
+	var board BoardView
+	if extension.Config.FogOfWar {
+		board = boardFromFogObservation(response.Game, *extension)
+	} else {
+		board = BoardFromState(response.State)
+	}
+	board.FogOfWar = extension.Config.FogOfWar
+	board.UnknownCount = extension.Observation.UnknownCount
+	board.Visible = make(map[Point]bool, len(extension.Observation.Visible))
+	board.Unknown = make(map[Point]bool, extension.Observation.UnknownCount)
+	board.Obstacles = make(map[Point]bool)
+	board.Holes = make(map[Point]bool)
+	board.Weights = make(map[Point]int)
+	for _, cell := range extension.Observation.Visible {
+		point := boardPoint(cell.Point, board.Mode)
+		if !cell.Visible {
+			board.Unknown[point] = true
+			continue
+		}
+		board.Visible[point] = true
+		if cell.Obstacle {
+			board.Obstacles[point] = true
+		}
+		if cell.Hole {
+			board.Holes[point] = true
+		}
+		if cell.TerritoryScore > 0 {
+			board.Weights[point] = cell.TerritoryScore
+		}
+	}
+	for i := range board.Worms {
+		board.Worms[i].Team = extension.Config.Teams[board.Worms[i].ID]
+		if score, ok := extension.Scores[board.Worms[i].ID]; ok && board.GameOver {
+			board.Worms[i].Score = score
+		}
+	}
+
+	// Extended legality is authoritative only in the observation. Never retain
+	// the base-state inference: it cannot account for variant terrain, trails,
+	// energy, or information hidden by fog.
+	board.Legal = [6]bool{}
+	observation := extension.Observation
+	if observation.WormID == board.ActiveWorm && (observation.Base.WormID == "" || observation.Base.WormID == board.ActiveWorm) {
+		board.Legal = directionSet(observation.Base.Legal)
+	}
+	if board.Pending != nil {
+		board.Pending.Legal = board.Legal
+	}
+	return board
+}
+
+func boardFromFogObservation(game GameSummary, extension ExtensionResponse) BoardView {
+	observation := extension.Observation
+	width, height := extension.Config.Width, extension.Config.Height
+	if width < 1 {
+		width = game.Width
+	}
+	if height < 1 {
+		height = game.Height
+	}
+	board := BoardView{
+		Width: width, Height: height, Tick: uint64(max(game.Tick, 0)),
+		Territory: make(map[Point]uint32), TerritoryOwners: make(map[Point]string),
+		ActiveWorm: observation.WormID, GameOver: game.Status == "completed",
+	}
+	if observation.WormID == "" {
+		return board
+	}
+	score := 0
+	if len(observation.Base.Scores) > 0 {
+		score = observation.Base.Scores[0]
+	}
+	board.Worms = []WormView{{
+		ID: observation.WormID, Name: observation.WormID,
+		Position: boardPoint(observation.Base.Position, board.Mode),
+		Score:    score, Alive: true, Active: true,
+		Team: extension.Config.Teams[observation.WormID],
+	}}
+	return board
+}
+
+func directionSet(directions []int) [6]bool {
+	var legal [6]bool
+	for _, direction := range directions {
+		if direction >= 0 && direction < len(legal) {
+			legal[direction] = true
+		}
+	}
+	return legal
 }
 
 func boardPoint(p StatePoint, mode int) Point {
@@ -765,7 +990,7 @@ func (m *Model) Scores() []ScoreView {
 func RankedScores(worms []WormView) ([]ScoreView, bool) {
 	ranked := make([]ScoreView, 0, len(worms))
 	for _, w := range worms {
-		ranked = append(ranked, ScoreView{ID: w.ID, Name: w.Name, Controller: w.Controller, BrainID: w.BrainID, Score: w.Score, Color: w.Color, Alive: w.Alive, Asleep: w.Asleep, Active: w.Active})
+		ranked = append(ranked, ScoreView{ID: w.ID, Name: w.Name, Controller: w.Controller, BrainID: w.BrainID, Team: w.Team, Score: w.Score, Color: w.Color, Alive: w.Alive, Asleep: w.Asleep, Active: w.Active})
 	}
 	sort.SliceStable(ranked, func(i, j int) bool {
 		if ranked[i].Score != ranked[j].Score {
@@ -775,7 +1000,72 @@ func RankedScores(worms []WormView) ([]ScoreView, bool) {
 	})
 	return ranked, len(ranked) > 1 && ranked[0].Score == ranked[1].Score
 }
+
+func rankedExtensionScores(scores map[string]int, participants []ParticipantSummary, teams map[string]string) ([]ScoreView, bool) {
+	participantsByID := make(map[string]ParticipantSummary, len(participants))
+	for _, participant := range participants {
+		participantsByID[participant.ID] = participant
+	}
+	worms := make([]WormView, 0, len(scores))
+	for id, score := range scores {
+		participant := participantsByID[id]
+		name := participant.Name
+		if name == "" {
+			name = id
+		}
+		worms = append(worms, WormView{
+			ID: id, Name: name, Controller: participant.Kind, BrainID: participant.BrainVersionID,
+			Team: teams[id], Score: score, Color: colorForID(participant.Color, id),
+		})
+	}
+	return RankedScores(worms)
+}
+
+func extensionWinnerNames(winners []string, participants []ParticipantSummary) []string {
+	names := make(map[string]string, len(participants))
+	for _, participant := range participants {
+		names[participant.ID] = participant.Name
+	}
+	out := make([]string, 0, len(winners))
+	for _, winner := range winners {
+		if name := names[winner]; name != "" {
+			out = append(out, name)
+		} else {
+			out = append(out, winner)
+		}
+	}
+	return out
+}
 func UpdateScores(board *BoardView) ([]ScoreView, bool) { return RankedScores(board.Worms) }
+
+func (m *Model) SetPlannerTeach(teach bool) {
+	m.mu.Lock()
+	m.view.Planner.Teach = teach
+	m.mu.Unlock()
+}
+
+func (m *Model) SetPlannerResult(decision PlannerDecision, response *GameResponse, err error) {
+	m.mu.Lock()
+	if err != nil {
+		m.view.Planner.Error = err.Error()
+		m.view.Planner.Decision = nil
+		m.mu.Unlock()
+		return
+	}
+	decision.Alternatives = append([]PlannerAlternative(nil), decision.Alternatives...)
+	m.view.Planner.Decision = &decision
+	m.view.Planner.Error = ""
+	m.mu.Unlock()
+	if response != nil {
+		m.SetGame(m.Snapshot().GameID, *response)
+	}
+}
+
+func (m *Model) SetShare(view ShareExperimentView) {
+	m.mu.Lock()
+	m.view.Share = view
+	m.mu.Unlock()
+}
 
 func IsAutonomousController(controller string) bool {
 	switch controller {

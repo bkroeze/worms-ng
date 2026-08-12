@@ -3,6 +3,7 @@
 package ui
 
 import (
+	"encoding/json"
 	"syscall/js"
 	"testing"
 )
@@ -52,5 +53,42 @@ func TestBrowserHooksExposeSetupNavigationAndAuthoritativeState(t *testing.T) {
 	capture := state.Get("capture")
 	if capture.Length() != 1 || uint32(capture.Index(0).Get("color").Int()) != 0x123456ff {
 		t.Fatalf("snapshot lost authoritative capture color: %v", capture)
+	}
+}
+
+func TestWASMFogResponseDecodesWithoutAuthoritativeState(t *testing.T) {
+	const payload = `{
+		"game":{"id":"fog-wasm","status":"completed","width":4,"height":3,"tick":12,
+			"participants":[{"id":"a","name":"Ada"},{"id":"b","name":"Babbage"}]},
+		"extension":{
+			"config":{"version":1,"enabled":true,"width":4,"height":3,"fog_of_war":true},
+			"observation":{"version":1,"worm_id":"a",
+				"base":{"version":1,"worm_id":"a","position":{"q":1,"r":1},"legal":[1,5],"scores":[9]},
+				"visible":[{"point":{"q":1,"r":1},"visible":true},{"point":{"q":2,"r":1},"visible":false}],
+				"unknown_count":1},
+			"scores":{"a":9,"b":4},"winners":["a"]
+		}
+	}`
+	var response GameResponse
+	if err := json.Unmarshal([]byte(payload), &response); err != nil {
+		t.Fatal(err)
+	}
+	shell := NewShell("")
+	shell.Model.SetGame("fog-wasm", response)
+	view := shell.Model.Snapshot()
+	if view.Board.Width != 4 || view.Board.Height != 3 || len(view.Board.Worms) != 1 || view.Board.Worms[0].ID != "a" {
+		t.Fatalf("redacted response did not produce a fog-safe board: %+v", view.Board)
+	}
+	if !view.Board.Legal[1] || !view.Board.Legal[5] || view.Board.Legal[0] {
+		t.Fatalf("typed observation legal moves were not consumed: %v", view.Board.Legal)
+	}
+	if len(view.HUD.Scores) != 2 || view.HUD.Scores[0].Score != 9 || len(view.HUD.Winners) != 1 || view.HUD.Winners[0] != "Ada" {
+		t.Fatalf("completion result was not projected in WASM: %+v", view.HUD)
+	}
+
+	installBrowserHooks(shell)
+	state := js.Global().Get("__wormsTest").Get("snapshot").Invoke()
+	if state.Get("winners").Length() != 1 || state.Get("winners").Index(0).String() != "Ada" {
+		t.Fatalf("browser snapshot omitted completion winner: %v", state)
 	}
 }

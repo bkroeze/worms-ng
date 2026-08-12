@@ -189,6 +189,77 @@ type StatePoint struct {
 	R int `json:"r"`
 }
 
+// Extension DTOs mirror the optional HTTP contract without importing the
+// engine-coupled extension package into the WASM client.
+type ExtensionWeight struct {
+	Point  StatePoint `json:"point"`
+	Weight int        `json:"weight"`
+}
+
+type ExtensionOneWayTrail struct {
+	From StatePoint `json:"from"`
+	To   StatePoint `json:"to"`
+}
+
+type ExtensionConfig struct {
+	Version             int                    `json:"version,omitempty"`
+	Enabled             bool                   `json:"enabled,omitempty"`
+	Width               int                    `json:"width,omitempty"`
+	Height              int                    `json:"height,omitempty"`
+	Seed                int64                  `json:"seed,omitempty"`
+	Obstacles           []StatePoint           `json:"obstacles,omitempty"`
+	Holes               []StatePoint           `json:"holes,omitempty"`
+	WeightedTerritories []ExtensionWeight      `json:"weighted_territories,omitempty"`
+	OneWayTrails        []ExtensionOneWayTrail `json:"one_way_trails,omitempty"`
+	TemporaryTrailTTL   uint64                 `json:"temporary_trail_ttl,omitempty"`
+	EnergyLimit         int                    `json:"energy_limit,omitempty"`
+	Teams               map[string]string      `json:"teams,omitempty"`
+	FogOfWar            bool                   `json:"fog_of_war,omitempty"`
+	VisibilityRadius    int                    `json:"visibility_radius,omitempty"`
+	ObstacleRate        uint8                  `json:"obstacle_rate,omitempty"`
+	HoleRate            uint8                  `json:"hole_rate,omitempty"`
+}
+
+type ExtensionVisibleCell struct {
+	Point          StatePoint `json:"point"`
+	Visible        bool       `json:"visible"`
+	Obstacle       bool       `json:"obstacle,omitempty"`
+	Hole           bool       `json:"hole,omitempty"`
+	TerritoryScore int        `json:"territory_score,omitempty"`
+}
+
+type ExtensionBaseObservation struct {
+	Version              int        `json:"version"`
+	WormID               string     `json:"worm_id"`
+	Position             StatePoint `json:"position"`
+	RawMask              uint8      `json:"raw_mask"`
+	Mask                 uint8      `json:"mask"`
+	OccupiedMask         uint8      `json:"occupied_mask"`
+	Incoming             int        `json:"incoming"`
+	Legal                []int      `json:"legal"`
+	Scores               []int      `json:"scores"`
+	LocalTerritoryCounts [6]uint8   `json:"local_territory_counts"`
+	Pending              bool       `json:"pending"`
+}
+
+type ExtensionObservation struct {
+	Version      int                      `json:"version"`
+	WormID       string                   `json:"worm_id"`
+	Base         ExtensionBaseObservation `json:"base"`
+	Visible      []ExtensionVisibleCell   `json:"visible,omitempty"`
+	UnknownCount int                      `json:"unknown_count,omitempty"`
+	TeamScore    int                      `json:"team_score,omitempty"`
+	Energy       *int                     `json:"energy,omitempty"`
+}
+
+type ExtensionResponse struct {
+	Config      ExtensionConfig      `json:"config"`
+	Observation ExtensionObservation `json:"observation"`
+	Scores      map[string]int       `json:"scores,omitempty"`
+	Winners     []string             `json:"winners,omitempty"`
+	TeamWinners []string             `json:"team_winners,omitempty"`
+}
+
 type StateDecision struct {
 	WormID  string `json:"worm_id"`
 	Mask    uint8  `json:"mask"`
@@ -261,22 +332,24 @@ type GameState struct {
 }
 
 type GameResponse struct {
-	Game   GameSummary  `json:"game"`
-	State  GameState    `json:"state"`
-	Events []StateEvent `json:"events"`
+	Game      GameSummary        `json:"game"`
+	State     GameState          `json:"state"`
+	Events    []StateEvent       `json:"events"`
+	Extension *ExtensionResponse `json:"extension,omitempty"`
 }
 
 type CreateGameRequest struct {
-	Version        string               `json:"version"`
-	ID             string               `json:"id"`
-	BrainVersionID string               `json:"brain_version_id,omitempty"`
-	Status         string               `json:"status"`
-	Ruleset        string               `json:"ruleset,omitempty"`
-	Width          int                  `json:"width,omitempty"`
-	Height         int                  `json:"height,omitempty"`
-	RulesPayload   json.RawMessage      `json:"rules_payload,omitempty"`
-	Seed           int64                `json:"seed"`
-	Participants   []ParticipantRequest `json:"participants"`
+	Version         string               `json:"version"`
+	ID              string               `json:"id"`
+	BrainVersionID  string               `json:"brain_version_id,omitempty"`
+	Status          string               `json:"status"`
+	Ruleset         string               `json:"ruleset,omitempty"`
+	Width           int                  `json:"width,omitempty"`
+	Height          int                  `json:"height,omitempty"`
+	RulesPayload    json.RawMessage      `json:"rules_payload,omitempty"`
+	Seed            int64                `json:"seed"`
+	Participants    []ParticipantRequest `json:"participants"`
+	ExtensionConfig *ExtensionConfig     `json:"extension_config,omitempty"`
 }
 
 type ParticipantRequest struct {
@@ -315,6 +388,124 @@ type GameCommandRequest struct {
 	Cursor    int64           `json:"cursor"`
 	EventHash string          `json:"event_hash"`
 	Payload   json.RawMessage `json:"payload,omitempty"`
+}
+
+type PlannerCapabilities struct {
+	Observation string `json:"observation"`
+	GlobalState bool   `json:"global_state"`
+}
+
+type PlannerConfig struct {
+	Version        int                 `json:"version"`
+	Mode           string              `json:"mode"`
+	Depth          int                 `json:"depth"`
+	Seed           int64               `json:"seed"`
+	CaptureWeight  int                 `json:"capture_weight"`
+	BorderWeight   int                 `json:"border_weight"`
+	SurvivalWeight int                 `json:"survival_weight"`
+	Capabilities   PlannerCapabilities `json:"capabilities"`
+}
+
+type PlanRequest struct {
+	Version       string        `json:"version"`
+	Cursor        int64         `json:"cursor"`
+	EventHash     string        `json:"event_hash"`
+	WormID        string        `json:"worm_id"`
+	PlannerConfig PlannerConfig `json:"planner_config"`
+	Teach         bool          `json:"teach"`
+}
+
+type PlannerAlternative struct {
+	Action    int    `json:"action"`
+	Capture   int    `json:"capture"`
+	Border    int    `json:"border"`
+	Survival  int    `json:"survival"`
+	Lookahead int    `json:"lookahead,omitempty"`
+	Total     int    `json:"total"`
+	Chosen    bool   `json:"chosen"`
+	Reason    string `json:"reason"`
+}
+
+type PlannerProvenance struct {
+	Version      string               `json:"version"`
+	Source       string               `json:"source"`
+	BrainID      string               `json:"brain_id,omitempty"`
+	BrainVersion string               `json:"brain_version,omitempty"`
+	WormID       string               `json:"worm_id"`
+	Mask         uint8                `json:"mask"`
+	RawMask      string               `json:"raw_mask"`
+	Action       int                  `json:"action"`
+	Seed         int64                `json:"seed"`
+	Mode         string               `json:"mode"`
+	Depth        int                  `json:"depth"`
+	Capabilities PlannerCapabilities  `json:"capabilities"`
+	StateHash    string               `json:"state_hash"`
+	Tick         uint64               `json:"tick"`
+	Round        uint64               `json:"round"`
+	Alternatives []PlannerAlternative `json:"alternatives"`
+}
+
+type PlannerDecision struct {
+	WormID       string               `json:"worm_id"`
+	Mask         uint8                `json:"mask"`
+	Action       int                  `json:"action"`
+	Alternatives []PlannerAlternative `json:"alternatives"`
+	Provenance   PlannerProvenance    `json:"provenance"`
+}
+
+type PlanResponse struct {
+	Decision PlannerDecision `json:"decision"`
+	GameResponse
+}
+
+type SharingSource struct {
+	WormID         string `json:"worm_id"`
+	Team           string `json:"team,omitempty"`
+	BrainVersionID string `json:"brain_version_id,omitempty"`
+}
+
+type SharingConfig struct {
+	Policy         string          `json:"policy"`
+	Seed           int64           `json:"seed"`
+	NoiseRate      float64         `json:"noise_rate,omitempty"`
+	CorruptionRate float64         `json:"corruption_rate,omitempty"`
+	Sources        []SharingSource `json:"sources"`
+}
+
+type ShareExperimentRequest struct {
+	Version            string        `json:"version"`
+	SharingConfig      SharingConfig `json:"sharing_config"`
+	RecipientVersionID string        `json:"recipient_version_id"`
+	SourceVersionIDs   []string      `json:"source_version_ids"`
+}
+
+type SharingMetrics struct {
+	Derived   int `json:"derived"`
+	Versions  int `json:"versions"`
+	Changes   int `json:"changes"`
+	Additions int `json:"additions"`
+	Removals  int `json:"removals"`
+}
+
+type SharedBrainVersion struct {
+	ID      string `json:"id"`
+	BrainID string `json:"brain_id"`
+	Version int    `json:"version"`
+	Hash    string `json:"hash"`
+}
+
+type SharingDerived struct {
+	Recipient SharingSource `json:"recipient"`
+	Hash      string        `json:"hash"`
+}
+
+type ShareExperimentResponse struct {
+	Policy        string               `json:"policy"`
+	Seed          int64                `json:"seed"`
+	Hash          string               `json:"hash"`
+	Derived       []SharingDerived     `json:"derived"`
+	BrainVersions []SharedBrainVersion `json:"brain_versions"`
+	Metrics       SharingMetrics       `json:"metrics"`
 }
 
 type TournamentSummary struct {
@@ -618,10 +809,11 @@ func (c *HTTPClient) CreateGame(ctx context.Context, in CreateGameRequest) (Game
 
 func (c *HTTPClient) Resume(ctx context.Context, id string) (GameResponse, uint64, error) {
 	var wire struct {
-		Version string       `json:"version"`
-		Game    GameSummary  `json:"game"`
-		State   GameState    `json:"state"`
-		Events  []StateEvent `json:"events"`
+		Version   string             `json:"version"`
+		Game      GameSummary        `json:"game"`
+		State     GameState          `json:"state"`
+		Events    []StateEvent       `json:"events"`
+		Extension *ExtensionResponse `json:"extension,omitempty"`
 	}
 	seq, err := c.get(ctx, "games/"+url.PathEscape(id)+"/resume", &wire, resourceGame)
 	if err != nil {
@@ -630,7 +822,7 @@ func (c *HTTPClient) Resume(ctx context.Context, id string) (GameResponse, uint6
 	if err = checkVersion(wire.Version); err != nil {
 		return GameResponse{}, seq, err
 	}
-	return GameResponse{wire.Game, wire.State, wire.Events}, seq, nil
+	return GameResponse{Game: wire.Game, State: wire.State, Events: wire.Events, Extension: wire.Extension}, seq, nil
 }
 
 func (c *HTTPClient) Act(ctx context.Context, id string, in ActRequest) (GameResponse, uint64, error) {
@@ -656,10 +848,11 @@ func (c *HTTPClient) Pause(ctx context.Context, id string, in GameCommandRequest
 }
 func (c *HTTPClient) gameCommand(ctx context.Context, id, operation string, in any) (GameResponse, uint64, error) {
 	var wire struct {
-		Version string       `json:"version"`
-		Game    GameSummary  `json:"game"`
-		State   GameState    `json:"state"`
-		Events  []StateEvent `json:"events"`
+		Version   string             `json:"version"`
+		Game      GameSummary        `json:"game"`
+		State     GameState          `json:"state"`
+		Events    []StateEvent       `json:"events"`
+		Extension *ExtensionResponse `json:"extension,omitempty"`
 	}
 	seq, err := c.do(ctx, http.MethodPost, "games/"+url.PathEscape(id)+"/"+operation, in, &wire, resourceGame)
 	if err != nil {
@@ -668,7 +861,42 @@ func (c *HTTPClient) gameCommand(ctx context.Context, id, operation string, in a
 	if err = checkVersion(wire.Version); err != nil {
 		return GameResponse{}, seq, err
 	}
-	return GameResponse{wire.Game, wire.State, wire.Events}, seq, nil
+	return GameResponse{Game: wire.Game, State: wire.State, Events: wire.Events, Extension: wire.Extension}, seq, nil
+}
+func (c *HTTPClient) Plan(ctx context.Context, id string, in PlanRequest) (PlanResponse, uint64, error) {
+	in.Version = protocol.APIVersion
+	var wire struct {
+		Version   string             `json:"version"`
+		Decision  PlannerDecision    `json:"decision"`
+		Game      GameSummary        `json:"game"`
+		State     GameState          `json:"state"`
+		Events    []StateEvent       `json:"events"`
+		Extension *ExtensionResponse `json:"extension,omitempty"`
+	}
+	seq, err := c.do(ctx, http.MethodPost, "games/"+url.PathEscape(id)+"/plan", in, &wire, resourceGame)
+	if err != nil {
+		return PlanResponse{}, seq, err
+	}
+	if err = checkVersion(wire.Version); err != nil {
+		return PlanResponse{}, seq, err
+	}
+	return PlanResponse{Decision: wire.Decision, GameResponse: GameResponse{Game: wire.Game, State: wire.State, Events: wire.Events, Extension: wire.Extension}}, seq, nil
+}
+
+func (c *HTTPClient) ShareExperiment(ctx context.Context, in ShareExperimentRequest) (ShareExperimentResponse, uint64, error) {
+	in.Version = protocol.APIVersion
+	var wire struct {
+		Version string `json:"version"`
+		ShareExperimentResponse
+	}
+	seq, err := c.do(ctx, http.MethodPost, "experiments/share", in, &wire, resourceBrains)
+	if err != nil {
+		return ShareExperimentResponse{}, seq, err
+	}
+	if err = checkVersion(wire.Version); err != nil {
+		return ShareExperimentResponse{}, seq, err
+	}
+	return wire.ShareExperimentResponse, seq, nil
 }
 
 func (c *HTTPClient) Tournaments(ctx context.Context) ([]TournamentSummary, uint64, error) {
