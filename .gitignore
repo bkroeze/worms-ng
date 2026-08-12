@@ -4,9 +4,9 @@
 bin/
 dist/
 *.exe
-worms-server
-worms-client
-wormsctl
+/worms-server
+/worms-client
+/wormsctl
 
 # SQLite databases and transient journals.
 worms.db
