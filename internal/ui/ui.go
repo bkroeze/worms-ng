@@ -55,6 +55,7 @@ const (
 	focusSetupSeed      = "setup.seed"
 	focusSetupStart     = "setup.start"
 	focusPause          = "play.pause"
+	focusAbort          = "play.abort"
 	focusGrid           = "play.grid"
 	focusFlash          = "play.flash"
 	focusMotion         = "play.motion"
@@ -95,8 +96,8 @@ type Shell struct {
 	slotBrain            [4]widget.Clickable
 	slotStartX           [4]widget.Clickable
 	slotStartY           [4]widget.Clickable
-	pause, grid, flash   widget.Clickable
-	motion               widget.Clickable
+	pause, abort         widget.Clickable
+	grid, flash, motion  widget.Clickable
 	planTeach, plan      widget.Clickable
 	directions           [6]widget.Clickable
 	inspectID            widget.Clickable
@@ -115,17 +116,17 @@ type Shell struct {
 	gamesList, brainsList, inspectorList, tournamentList, setupList, shareList widget.List
 	gameClicks, brainClicks, ruleClicks                                        []widget.Clickable
 
-	keyTag, pointerTag                          struct{}
-	focused                                     string
-	editFresh                                   bool
-	keyboardFocused                             bool
-	pressedKeys                                 map[key.Name]bool
-	pointerDown                                 map[pointer.ID]bool
-	actionInFlight, pauseRequested, pauseTarget atomic.Bool
-	scheduler                                   TickScheduler
-	selectedRule                                int
-	handledNavPress                             [navButtonCount]time.Time
-	handledNavClick                             [navButtonCount]bool
+	keyTag, pointerTag                                          struct{}
+	focused                                                     string
+	editFresh                                                   bool
+	keyboardFocused                                             bool
+	pressedKeys                                                 map[key.Name]bool
+	pointerDown                                                 map[pointer.ID]bool
+	actionInFlight, pauseRequested, pauseTarget, abortRequested atomic.Bool
+	scheduler                                                   TickScheduler
+	selectedRule                                                int
+	handledNavPress                                             [navButtonCount]time.Time
+	handledNavClick                                             [navButtonCount]bool
 }
 
 func NewShell(baseURL string) *Shell {
@@ -404,7 +405,7 @@ func (s *Shell) focusOrder() []string {
 		}
 		order = append(order, focusSetupStart)
 	case ScreenPlay:
-		order = append(order, focusPause, focusGrid, focusFlash, focusMotion)
+		order = append(order, focusPause, focusAbort, focusGrid, focusFlash, focusMotion)
 		if v.Board.Pending != nil {
 			order = append(order, focusPlanTeach, focusPlan)
 		}
@@ -490,6 +491,8 @@ func (s *Shell) activateFocus() {
 		go s.startGame()
 	case focusPause:
 		s.requestPause(!v.HUD.Paused)
+	case focusAbort:
+		s.requestAbort()
 	case focusGrid:
 		s.Model.ToggleGrid()
 	case focusFlash:
@@ -1325,6 +1328,10 @@ func (s *Shell) hud(gtx layout.Context, v AppView) layout.Dimensions {
 		s.focused = focusPause
 		s.requestPause(!v.HUD.Paused)
 	}
+	if s.abort.Clicked(gtx) {
+		s.focused = focusAbort
+		s.requestAbort()
+	}
 	if s.grid.Clicked(gtx) {
 		s.focused = focusGrid
 		s.Model.ToggleGrid()
@@ -1366,6 +1373,9 @@ func (s *Shell) hud(gtx layout.Context, v AppView) layout.Dimensions {
 			return responsiveStrip(gtx, []layout.FlexChild{
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return s.button(gtx, &s.pause, map[bool]string{true: "resume (ESC)", false: "pause (ESC)"}[v.HUD.Paused], focusPause, true)
+				}),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return s.button(gtx, &s.abort, "abort game", focusAbort, true)
 				}),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return s.button(gtx, &s.grid, map[bool]string{true: "grid G: on", false: "grid G: off"}[v.Toggles.Grid], focusGrid, true)
@@ -1937,12 +1947,12 @@ func (s *Shell) submitDirection(direction Direction) {
 	if v.HUD.Paused || v.Board.GameOver {
 		return
 	}
+	if !IsLegalDirection(v.Board.Legal, direction) {
+		return
+	}
 	if v.GameID == "" || v.Board.ActiveWorm == "" {
 		s.Model.SetGameError(errors.New("no authoritative active worm is available"))
 		s.requestFrame()
-		return
-	}
-	if !IsLegalDirection(v.Board.Legal, direction) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
@@ -1975,6 +1985,32 @@ func (s *Shell) requestPause(paused bool) {
 	s.requestFrame()
 }
 
+func (s *Shell) requestAbort() {
+	s.abortRequested.Store(true)
+	if s.actionInFlight.CompareAndSwap(false, true) {
+		go s.finishAction()
+	}
+	s.requestFrame()
+}
+
+func (s *Shell) commitAbort() {
+	v := s.Model.Snapshot()
+	if v.GameID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	if _, _, err := s.Client.Abort(ctx, v.GameID, GameCommandRequest{Cursor: v.GameCursor, EventHash: v.EventHash}); err != nil {
+		s.Model.SetGameError(fmt.Errorf("game was not aborted: %w", err))
+		s.requestFrame()
+		return
+	}
+	s.Model.resetGame()
+	persistGame("")
+	s.scheduler.Reset()
+	s.requestFrame()
+}
+
 func (s *Shell) commitPaused(paused bool) {
 	v := s.Model.Snapshot()
 	if v.GameID == "" {
@@ -1997,12 +2033,17 @@ func (s *Shell) commitPaused(paused bool) {
 	s.requestFrame()
 }
 
-// finishAction retains exclusive ownership while draining pause intent. This
-// makes ESC and pointer pause durable across an in-flight tick or teaching
-// request, and prevents the scheduler from arming work between the action and
-// its authoritative pause command.
+// finishAction retains exclusive ownership while draining abort and pause
+// intent. This makes those controls durable across an in-flight tick or
+// teaching request, and prevents the scheduler from arming work between an
+// action and its queued authoritative command.
 func (s *Shell) finishAction() {
 	for {
+		if s.abortRequested.Swap(false) {
+			s.pauseRequested.Store(false)
+			s.commitAbort()
+			continue
+		}
 		if s.pauseRequested.Swap(false) {
 			s.commitPaused(s.pauseTarget.Load())
 			continue
@@ -2010,7 +2051,8 @@ func (s *Shell) finishAction() {
 		s.actionInFlight.Store(false)
 		// Close the race with a request arriving after the swap but before the
 		// action lock was released. The winner owns the same drain loop.
-		if !s.pauseRequested.Load() || !s.actionInFlight.CompareAndSwap(false, true) {
+		pending := s.abortRequested.Load() || s.pauseRequested.Load()
+		if !pending || !s.actionInFlight.CompareAndSwap(false, true) {
 			s.requestFrame()
 			return
 		}
@@ -2019,8 +2061,7 @@ func (s *Shell) finishAction() {
 
 func (s *Shell) scheduleAutonomous(gtx layout.Context) {
 	v := s.Model.Snapshot()
-	controller := ActiveController(v.Board)
-	autonomous := v.Screen == ScreenPlay && v.Board.Pending == nil && !v.Board.GameOver && (IsAutonomousController(controller) || controller == ControllerNew)
+	autonomous := v.Screen == ScreenPlay && v.GameID != "" && needsAuthoritativeTick(v.Board)
 	identity := fmt.Sprintf("%s:%d:%s", v.GameID, v.GameCursor, v.EventHash)
 	due, next := s.scheduler.Due(gtx.Now, v.HUD.Speed, v.HUD.Paused || s.pauseRequested.Load() || s.actionInFlight.Load(), autonomous, identity)
 	if !next.IsZero() {

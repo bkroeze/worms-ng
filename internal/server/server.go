@@ -779,7 +779,7 @@ func (s *Service) gamesRoute(w http.ResponseWriter, r *http.Request, p []string)
 		}
 		methodNotAllowed(w, http.MethodGet, http.MethodPost)
 		return
-	case "act", "teach", "pause", "tick":
+	case "abort", "act", "teach", "pause", "tick":
 		if r.Method == http.MethodPost {
 			s.gameOperation(w, r, id, p[1])
 			return
@@ -1553,14 +1553,17 @@ func (s *Service) gameOperation(w http.ResponseWriter, r *http.Request, id, op s
 			return
 		}
 	}
-	if op == "pause" {
-		status := "paused"
-		if in.Payload != nil {
-			var x struct {
-				Status string `json:"status"`
-			}
-			if json.Unmarshal(in.Payload, &x) == nil && x.Status != "" {
-				status = x.Status
+	if op == "pause" || op == "abort" {
+		status := "cancelled"
+		if op == "pause" {
+			status = "paused"
+			if in.Payload != nil {
+				var x struct {
+					Status string `json:"status"`
+				}
+				if json.Unmarshal(in.Payload, &x) == nil && x.Status != "" {
+					status = x.Status
+				}
 			}
 		}
 		e = s.data.UpdateGame(r.Context(), store.UpdateGameInput{ID: id, Status: status, ExpectedSequence: cursor, ExpectedHash: eh})
@@ -1696,6 +1699,10 @@ func (s *Service) gameOperation(w http.ResponseWriter, r *http.Request, id, op s
 	}
 
 	events, e := s.data.AppendGameEventsWithSnapshot(r.Context(), id, cursor, eh, []store.EventInput{ep}, store.Snapshot{GameID: id, Sequence: cursor + 1, Payload: snap})
+	if e != nil {
+		mapStoreError(w, e)
+		return
+	}
 	if st.GameOver {
 		if extended {
 			if e = s.persistAuthoritativeExtensionResults(r.Context(), g, &extState); e != nil {

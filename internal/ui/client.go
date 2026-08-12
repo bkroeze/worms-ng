@@ -846,6 +846,10 @@ func (c *HTTPClient) Pause(ctx context.Context, id string, in GameCommandRequest
 	in.Payload, _ = json.Marshal(map[string]string{"status": status})
 	return c.gameCommand(ctx, id, "pause", in)
 }
+func (c *HTTPClient) Abort(ctx context.Context, id string, in GameCommandRequest) (GameResponse, uint64, error) {
+	in.Version = protocol.APIVersion
+	return c.gameCommand(ctx, id, "abort", in)
+}
 func (c *HTTPClient) gameCommand(ctx context.Context, id, operation string, in any) (GameResponse, uint64, error) {
 	var wire struct {
 		Version   string             `json:"version"`

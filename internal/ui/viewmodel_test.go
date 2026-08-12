@@ -58,7 +58,10 @@ func TestBoardFromStateSkipsEmptyTerritoriesAndKeepsHalfColors(t *testing.T) {
 	if len(b.Trails) != 1 || b.Trails[0].AColor == b.Trails[0].BColor {
 		t.Fatalf("trail endpoint colors collapsed: %+v", b.Trails)
 	}
+	if b.Territory[Point{X: 0, Y: 0}] == b.Trails[0].AColor || b.Territory[Point{X: 1, Y: 0}] == b.Trails[0].BColor {
+		t.Fatalf("territory background matches trail color: territory=%v trails=%+v", b.Territory, b.Trails)
+	}
 	if b.Trails[0].AColor&0xff != 0xff || b.Trails[0].BColor&0xff != 0xff {
-		t.Fatalf("colors are not opaque RGBA: %+v", b.Trails[0])
+		t.Fatalf("colors are not opaque RGBA: %+v", b.Trails)
 	}
 }

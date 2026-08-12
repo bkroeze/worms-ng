@@ -63,10 +63,10 @@ are optional.
 
 ## Optimistic game writes
 
-`POST /api/v1/games/{id}/act`, `/teach`, and `/pause` require the current cursor
-and event hash. The cursor may be sent as `cursor`, `sequence`,
-`expected_cursor`, or `expected_version` (if multiple are supplied they must
-agree). The hash may be `event_hash` or the `If-Match` header.
+`POST /api/v1/games/{id}/act`, `/teach`, `/pause`, `/tick`, and `/abort`
+require the current cursor and event hash. The cursor may be sent as `cursor`,
+`sequence`, `expected_cursor`, or `expected_version` (if multiple are supplied
+they must agree). The hash may be `event_hash` or the `If-Match` header.
 
 Example move:
 
@@ -76,9 +76,16 @@ curl --fail -X POST http://127.0.0.1:8080/api/v1/games/demo-1/act \
   -d '{"version":"v1","cursor":0,"event_hash":"","worm_id":"w1","direction":0}'
 ```
 
-A successful write returns the updated game, appended events, and state. A stale
-cursor/hash returns `409` with conflict details. Invalid JSON/version/action is
-`400`; a legal-but-impossible move is `422`.
+A successful write returns the updated game and authoritative state;
+event-producing commands also return their appended events. A stale cursor/hash
+returns `409` with conflict details. Invalid JSON/version/action is `400`; a
+legal-but-impossible move is `422`.
+
+`POST /api/v1/games/{id}/abort` atomically changes the game status to
+`cancelled` when the supplied cursor and event hash match. It does not append an
+event or advance the cursor or event hash, and returns the updated game with the
+current state (plus extension state for extension games). A cancelled game is
+terminal, so later `/act`, `/teach`, `/pause`, and `/tick` writes are rejected.
 
 ## Errors and compatibility
 

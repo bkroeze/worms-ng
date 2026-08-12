@@ -164,6 +164,39 @@ func TestSchedulerChangesPresentationDelayAndNeverCatchesUp(t *testing.T) {
 	}
 }
 
+func TestNeedsAuthoritativeTickBootstrapsBeforeAnyWormIsActive(t *testing.T) {
+	if !needsAuthoritativeTick(BoardView{}) {
+		t.Fatal("initial authoritative turn was not scheduled")
+	}
+	if !needsAuthoritativeTick(BoardView{
+		ActiveWorm: "wild",
+		Worms:      []WormView{{ID: "wild", Controller: ControllerWild, Active: true}},
+	}) {
+		t.Fatal("wild controller was not scheduled")
+	}
+	if needsAuthoritativeTick(BoardView{Pending: &DecisionView{WormID: "new"}}) {
+		t.Fatal("pending teaching decision scheduled another tick")
+	}
+	if needsAuthoritativeTick(BoardView{GameOver: true}) {
+		t.Fatal("finished board scheduled another tick")
+	}
+}
+
+func TestBlockedDirectionBeforeFirstTurnDoesNotRaiseError(t *testing.T) {
+	shell := NewShell("http://browser.test")
+	shell.Model.SetGame("g", GameResponse{
+		Game:  GameSummary{ID: "g", Status: "active", EventHash: "initial"},
+		State: GameState{Width: 18, Height: 18, ActiveSlot: -1},
+	})
+
+	shell.submitDirection(East)
+
+	view := shell.Model.Snapshot()
+	if view.Screen != ScreenPlay || view.Error.Message != "" {
+		t.Fatalf("blocked direction changed screens or raised an error: %+v", view.Error)
+	}
+}
+
 func TestPauseQueuedDuringAutonomousRequestCommitsImmediatelyAfterIt(t *testing.T) {
 	tickStarted := make(chan struct{})
 	releaseTick := make(chan struct{})
@@ -220,6 +253,68 @@ func TestPauseQueuedDuringAutonomousRequestCommitsImmediatelyAfterIt(t *testing.
 	view := shell.Model.Snapshot()
 	if pauseCalls != 1 || shell.actionInFlight.Load() || shell.pauseRequested.Load() || !view.HUD.Paused || view.GameCursor != 2 {
 		t.Fatalf("queued pause completion calls=%d inFlight=%v requested=%v view=%+v", pauseCalls, shell.actionInFlight.Load(), shell.pauseRequested.Load(), view)
+	}
+}
+
+func TestAbortQueuedDuringAutonomousRequestUsesSettledHeadAndResetsGame(t *testing.T) {
+	tickStarted := make(chan struct{})
+	releaseTick := make(chan struct{})
+	abortFinished := make(chan struct{})
+	abortCalls := 0
+	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body := `{"version":"v1"}`
+		switch r.URL.Path {
+		case "/api/v1/games/g/tick":
+			close(tickStarted)
+			<-releaseTick
+			body = `{"version":"v1","game":{"id":"g","status":"active","cursor":1,"event_hash":"after-tick"},"state":{"width":18,"height":18,"active_slot":0}}`
+		case "/api/v1/games/g/abort":
+			abortCalls++
+			var command GameCommandRequest
+			if err := json.NewDecoder(r.Body).Decode(&command); err != nil {
+				t.Error(err)
+			}
+			if command.Cursor != 1 || command.EventHash != "after-tick" {
+				t.Errorf("abort did not use settled authoritative head: %+v", command)
+			}
+			body = `{"version":"v1","game":{"id":"g","status":"cancelled","cursor":1,"event_hash":"after-tick"},"state":{"width":18,"height":18,"active_slot":0}}`
+			close(abortFinished)
+		default:
+			return &http.Response{StatusCode: http.StatusNotFound, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":"not found"}`)), Request: r}, nil
+		}
+		header := make(http.Header)
+		header.Set("Content-Type", "application/json")
+		return &http.Response{StatusCode: http.StatusOK, Header: header, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})
+
+	shell := NewShell("http://browser.test")
+	shell.Client.WithHTTPClient(&http.Client{Transport: transport})
+	shell.Model.SetGame("g", GameResponse{
+		Game:  GameSummary{ID: "g", Status: "active", EventHash: "initial"},
+		State: GameState{Width: 18, Height: 18, ActiveSlot: -1},
+	})
+	go shell.submitAutonomous()
+	<-tickStarted
+	shell.requestAbort()
+	if !shell.abortRequested.Load() {
+		t.Fatal("abort intent was discarded while tick was in flight")
+	}
+	close(releaseTick)
+	select {
+	case <-abortFinished:
+	case <-time.After(2 * time.Second):
+		t.Fatal("queued abort was not committed after tick")
+	}
+	deadline := time.Now().Add(time.Second)
+	for shell.actionInFlight.Load() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	view := shell.Model.Snapshot()
+	if abortCalls != 1 || shell.actionInFlight.Load() || shell.abortRequested.Load() {
+		t.Fatalf("queued abort completion calls=%d inFlight=%v requested=%v", abortCalls, shell.actionInFlight.Load(), shell.abortRequested.Load())
+	}
+	if view.Screen != ScreenSetup || view.GameID != "" || view.Board.Width != 0 {
+		t.Fatalf("aborted game was not reset to setup: %+v", view)
 	}
 }
 

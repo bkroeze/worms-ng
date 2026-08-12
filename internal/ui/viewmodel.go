@@ -567,6 +567,20 @@ func (m *Model) SetGameCommand(game GameSummary, paused bool) {
 	m.view.Error = ErrorView{}
 	m.mu.Unlock()
 }
+func (m *Model) resetGame() {
+	m.mu.Lock()
+	speed := m.view.HUD.Speed
+	m.view.Screen = ScreenSetup
+	m.view.GameID = ""
+	m.view.GameCursor = 0
+	m.view.EventHash = ""
+	m.view.Board = BoardView{}
+	m.view.HUD = HUDView{Speed: speed}
+	m.view.Planner.Decision = nil
+	m.view.Planner.Error = ""
+	m.view.Error = ErrorView{}
+	m.mu.Unlock()
+}
 
 func authoritativeStatus(game GameSummary, board BoardView) string {
 	if board.GameOver {
@@ -630,6 +644,7 @@ func capturedDiff(old, next BoardView, events []StateEvent) CaptureView {
 
 func BoardFromState(st GameState) BoardView {
 	out := BoardView{Width: st.Width, Height: st.Height, Topology: st.Topology, Mode: st.Mode, Tick: st.Tick, Round: st.Round, Territory: make(map[Point]uint32), TerritoryOwners: make(map[Point]string), GameOver: st.GameOver, Provenance: st.Provenance}
+	territoryLineColors := make(map[Point]uint32)
 	activeSlot := st.ActiveSlot
 	if activeSlot < 0 || activeSlot >= len(st.Worms) || !st.Worms[activeSlot].Alive || st.Worms[activeSlot].Controller == ControllerAsleep {
 		activeSlot = -1
@@ -650,17 +665,19 @@ func BoardFromState(st GameState) BoardView {
 			continue
 		}
 		p := boardPoint(t.ID, st.Mode)
-		out.Territory[p] = colorForID(t.Color, t.Owner)
+		lineColor := colorForID(t.Color, t.Owner)
+		out.Territory[p] = territoryBackgroundColor(lineColor)
+		territoryLineColors[p] = lineColor
 		out.TerritoryOwners[p] = t.Owner
 	}
 	for _, t := range st.Trails {
 		a := boardPoint(t.Edge.A, st.Mode)
 		b := boardPoint(t.Edge.B, st.Mode)
-		aColor, ok := out.Territory[a]
+		aColor, ok := territoryLineColors[a]
 		if !ok {
 			aColor = colorForID(t.Owner, t.Owner)
 		}
-		bColor, ok := out.Territory[b]
+		bColor, ok := territoryLineColors[b]
 		if !ok {
 			bColor = colorForID(t.Owner, t.Owner)
 		}
@@ -863,6 +880,15 @@ func colorForID(value, fallback string) uint32 {
 	g := byte(0x58 + (h>>8)&0x7f)
 	b := byte(0x58 + h&0x7f)
 	return uint32(r)<<24 | uint32(g)<<16 | uint32(b)<<8 | 0xff
+}
+
+func territoryBackgroundColor(c uint32) uint32 {
+	const backgroundScale = 3
+	const colorScale = 5
+	r := uint32(byte(c>>24)) * backgroundScale / colorScale
+	g := uint32(byte(c>>16)) * backgroundScale / colorScale
+	b := uint32(byte(c>>8)) * backgroundScale / colorScale
+	return r<<24 | g<<16 | b<<8 | uint32(byte(c))
 }
 
 func (m *Model) SetBoard(v BoardView) {
@@ -1081,4 +1107,15 @@ func ActiveController(board BoardView) string {
 		}
 	}
 	return ""
+}
+
+func needsAuthoritativeTick(board BoardView) bool {
+	if board.Pending != nil || board.GameOver {
+		return false
+	}
+	if board.ActiveWorm == "" {
+		return true
+	}
+	controller := ActiveController(board)
+	return controller == ControllerNew || IsAutonomousController(controller)
 }

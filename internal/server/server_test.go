@@ -111,6 +111,190 @@ func TestGameContractAndRestartResume(t *testing.T) {
 	}
 }
 
+func TestAbortGamePreservesHeadAndRejectsFurtherMutations(t *testing.T) {
+	svc, err := Open(":memory:", testAssets())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	post := func(path string, body any) *httptest.ResponseRecorder {
+		payload, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(string(payload)))
+		req.Header.Set("Content-Type", "application/json")
+		svc.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := post("/api/v1/games", map[string]any{
+		"version": "v1", "id": "abort-game",
+		"participants": []map[string]any{{"id": "w1", "kind": "human"}},
+	}); rec.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	rec := post("/api/v1/games/abort-game/act", map[string]any{
+		"version": "v1", "cursor": 0, "worm_id": "w1", "direction": 0,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("act status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	type commandResponse struct {
+		Version string `json:"version"`
+		Game    struct {
+			Status    string `json:"status"`
+			Cursor    int64  `json:"cursor"`
+			EventHash string `json:"event_hash"`
+		} `json:"game"`
+		State json.RawMessage `json:"state"`
+	}
+	var acted commandResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &acted); err != nil {
+		t.Fatal(err)
+	}
+	if acted.Game.Cursor != 1 || acted.Game.EventHash == "" || len(acted.State) == 0 {
+		t.Fatalf("bad act response: %s", rec.Body.String())
+	}
+	actedState, err := engine.UnmarshalSnapshot(acted.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legalMoves := actedState.LegalMoves("w1")
+	if len(legalMoves) == 0 {
+		t.Fatal("acted state has no legal follow-up move")
+	}
+	for _, staleCase := range []struct {
+		name   string
+		cursor int64
+		hash   string
+	}{
+		{name: "cursor", cursor: 0, hash: acted.Game.EventHash},
+		{name: "hash", cursor: acted.Game.Cursor, hash: "stale"},
+	} {
+		t.Run("stale_"+staleCase.name, func(t *testing.T) {
+			stale := post("/api/v1/games/abort-game/abort", map[string]any{
+				"version": "v1", "cursor": staleCase.cursor, "event_hash": staleCase.hash,
+			})
+			if stale.Code != http.StatusConflict {
+				t.Fatalf("stale abort status=%d body=%s", stale.Code, stale.Body.String())
+			}
+		})
+	}
+	rec = post("/api/v1/games/abort-game/abort", map[string]any{
+		"version": "v1", "cursor": acted.Game.Cursor, "event_hash": acted.Game.EventHash,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("abort status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var aborted commandResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &aborted); err != nil {
+		t.Fatal(err)
+	}
+	if aborted.Version != protocol.APIVersion || aborted.Game.Status != "cancelled" {
+		t.Fatalf("bad abort response: %s", rec.Body.String())
+	}
+	if aborted.Game.Cursor != acted.Game.Cursor || aborted.Game.EventHash != acted.Game.EventHash {
+		t.Fatalf("abort advanced head: before=%+v after=%+v", acted.Game, aborted.Game)
+	}
+	if string(aborted.State) != string(acted.State) {
+		t.Fatalf("abort changed authoritative state: before=%s after=%s", acted.State, aborted.State)
+	}
+	mutations := []struct {
+		op   string
+		body map[string]any
+	}{
+		{op: "act", body: map[string]any{"worm_id": "w1", "direction": int(legalMoves[0])}},
+		{op: "tick", body: map[string]any{}},
+		{op: "pause", body: map[string]any{}},
+	}
+	for _, mutation := range mutations {
+		t.Run("reject_"+mutation.op, func(t *testing.T) {
+			mutation.body["version"] = "v1"
+			mutation.body["cursor"] = aborted.Game.Cursor
+			mutation.body["event_hash"] = aborted.Game.EventHash
+			rejected := post("/api/v1/games/abort-game/"+mutation.op, mutation.body)
+			if rejected.Code != http.StatusConflict || !strings.Contains(rejected.Body.String(), `"immutable"`) {
+				t.Fatalf("%s after abort status=%d body=%s", mutation.op, rejected.Code, rejected.Body.String())
+			}
+			current := httptest.NewRecorder()
+			svc.Handler().ServeHTTP(current, httptest.NewRequest(http.MethodGet, "/api/v1/games/abort-game", nil))
+			var game struct {
+				Game struct {
+					Status    string `json:"status"`
+					Cursor    int64  `json:"cursor"`
+					EventHash string `json:"event_hash"`
+				} `json:"game"`
+			}
+			if err := json.Unmarshal(current.Body.Bytes(), &game); err != nil {
+				t.Fatal(err)
+			}
+			if current.Code != http.StatusOK || game.Game.Status != "cancelled" || game.Game.Cursor != aborted.Game.Cursor || game.Game.EventHash != aborted.Game.EventHash {
+				t.Fatalf("mutation changed cancelled game: status=%d body=%s", current.Code, current.Body.String())
+			}
+		})
+	}
+}
+
+func TestAbortExtensionReturnsCurrentAuthoritativeState(t *testing.T) {
+	svc, err := Open(":memory:", testAssets())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	post := func(path, body string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		svc.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+	create := `{"version":"v1","id":"abort-extension","participants":[{"id":"w1","kind":"human"}],"extension_config":{"version":1,"enabled":true,"obstacles":[{"q":1,"r":1}],"energy_limit":3}}`
+	if rec := post("/api/v1/games", create); rec.Code != http.StatusCreated {
+		t.Fatalf("create extension status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	rec := post("/api/v1/games/abort-extension/act", `{"version":"v1","cursor":0,"worm_id":"w1","direction":0}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("extension act status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	type extensionCommandResponse struct {
+		Game struct {
+			Status    string `json:"status"`
+			Cursor    int64  `json:"cursor"`
+			EventHash string `json:"event_hash"`
+		} `json:"game"`
+		State     json.RawMessage `json:"state"`
+		Extension json.RawMessage `json:"extension"`
+	}
+	var acted extensionCommandResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &acted); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"version": "v1", "cursor": acted.Game.Cursor, "event_hash": acted.Game.EventHash,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec = post("/api/v1/games/abort-extension/abort", string(payload))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("extension abort status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var aborted extensionCommandResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &aborted); err != nil {
+		t.Fatal(err)
+	}
+	if aborted.Game.Status != "cancelled" || aborted.Game.Cursor != acted.Game.Cursor || aborted.Game.EventHash != acted.Game.EventHash {
+		t.Fatalf("bad extension abort game: %s", rec.Body.String())
+	}
+	if len(aborted.State) == 0 || string(aborted.State) != string(acted.State) {
+		t.Fatalf("extension abort changed authoritative state: before=%s after=%s", acted.State, aborted.State)
+	}
+	if len(aborted.Extension) == 0 || string(aborted.Extension) != string(acted.Extension) {
+		t.Fatalf("extension abort changed extension state: before=%s after=%s", acted.Extension, aborted.Extension)
+	}
+}
+
 func TestOptionalExtensionRestartAndFogContract(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "extension.sqlite")
 	svc, err := Open(db, testAssets())

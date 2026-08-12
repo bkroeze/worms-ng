@@ -113,6 +113,12 @@ func installBrowserHooks(shell *Shell) {
 			waitForBrowserIdle(shell)
 		}, shell)
 	})
+	bindBrowserHook(hooks, "abort", func(_ js.Value, _ []js.Value) any {
+		return browserPromise(func() {
+			shell.requestAbort()
+			waitForBrowserIdle(shell)
+		}, shell)
+	})
 	bindBrowserHook(hooks, "inspect", func(_ js.Value, args []js.Value) any {
 		return browserPromise(func() {
 			query := shell.Model.Snapshot().Inspect
