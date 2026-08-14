@@ -55,6 +55,8 @@ const (
 	focusSetupSeed      = "setup.seed"
 	focusSetupStart     = "setup.start"
 	focusPause          = "play.pause"
+	focusSpeedDown      = "play.speed-down"
+	focusSpeedUp        = "play.speed-up"
 	focusAbort          = "play.abort"
 	focusGrid           = "play.grid"
 	focusFlash          = "play.flash"
@@ -97,6 +99,7 @@ type Shell struct {
 	slotStartX           [4]widget.Clickable
 	slotStartY           [4]widget.Clickable
 	pause, abort         widget.Clickable
+	speedDown, speedUp   widget.Clickable
 	grid, flash, motion  widget.Clickable
 	planTeach, plan      widget.Clickable
 	directions           [6]widget.Clickable
@@ -276,16 +279,31 @@ func (s *Shell) key(k key.Event) {
 	if s.isEditableFocus() {
 		return
 	}
+	if v.Screen == ScreenPlay {
+		switch k.Name {
+		case "+":
+			s.adjustSpeed(1)
+			return
+		case "-":
+			s.adjustSpeed(-1)
+			return
+		}
+	}
 	n := string(k.Name)
 	if v.Screen == ScreenPlay && len(n) == 1 && n >= "1" && n <= "9" {
-		s.Model.SetSpeed(int(n[0] - '0'))
-		s.scheduler.Reset()
-		s.requestFrame()
+		s.adjustSpeed(int(n[0]-'0') - v.HUD.Speed)
 		return
 	}
 	if d, ok := DirectionFromKey(string(k.Name)); ok && v.Screen == ScreenPlay {
 		go s.submitDirection(d)
 	}
+}
+
+func (s *Shell) adjustSpeed(delta int) {
+	v := s.Model.Snapshot()
+	s.Model.SetSpeed(v.HUD.Speed + delta)
+	s.scheduler.Reset()
+	s.requestFrame()
 }
 
 func (s *Shell) editText(value string) {
@@ -405,7 +423,7 @@ func (s *Shell) focusOrder() []string {
 		}
 		order = append(order, focusSetupStart)
 	case ScreenPlay:
-		order = append(order, focusPause, focusAbort, focusGrid, focusFlash, focusMotion)
+		order = append(order, focusPause, focusSpeedDown, focusSpeedUp, focusAbort, focusGrid, focusFlash, focusMotion)
 		if v.Board.Pending != nil {
 			order = append(order, focusPlanTeach, focusPlan)
 		}
@@ -491,6 +509,10 @@ func (s *Shell) activateFocus() {
 		go s.startGame()
 	case focusPause:
 		s.requestPause(!v.HUD.Paused)
+	case focusSpeedDown:
+		s.adjustSpeed(-1)
+	case focusSpeedUp:
+		s.adjustSpeed(1)
 	case focusAbort:
 		s.requestAbort()
 	case focusGrid:
@@ -1328,6 +1350,14 @@ func (s *Shell) hud(gtx layout.Context, v AppView) layout.Dimensions {
 		s.focused = focusPause
 		s.requestPause(!v.HUD.Paused)
 	}
+	if s.speedDown.Clicked(gtx) {
+		s.focused = focusSpeedDown
+		s.adjustSpeed(-1)
+	}
+	if s.speedUp.Clicked(gtx) {
+		s.focused = focusSpeedUp
+		s.adjustSpeed(1)
+	}
 	if s.abort.Clicked(gtx) {
 		s.focused = focusAbort
 		s.requestAbort()
@@ -1373,6 +1403,12 @@ func (s *Shell) hud(gtx layout.Context, v AppView) layout.Dimensions {
 			return responsiveStrip(gtx, []layout.FlexChild{
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return s.button(gtx, &s.pause, map[bool]string{true: "resume (ESC)", false: "pause (ESC)"}[v.HUD.Paused], focusPause, true)
+				}),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return s.button(gtx, &s.speedDown, "speed −", focusSpeedDown, v.HUD.Speed > 1)
+				}),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return s.button(gtx, &s.speedUp, "speed +", focusSpeedUp, v.HUD.Speed < 9)
 				}),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return s.button(gtx, &s.abort, "abort game", focusAbort, true)

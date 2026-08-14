@@ -348,6 +348,34 @@ func TestRepeatedPhysicalKeyPressChangesToggleOnce(t *testing.T) {
 	}
 }
 
+func TestPlaySpeedCanBeAdjustedUpAndDown(t *testing.T) {
+	shell := NewShell("")
+	shell.Model.Navigate(ScreenPlay)
+
+	shell.key(key.Event{Name: "+", State: key.Press})
+	if got := shell.Model.Snapshot().HUD.Speed; got != 6 {
+		t.Fatalf("speed after increase = %d, want 6", got)
+	}
+	shell.key(key.Event{Name: "+", State: key.Release})
+	shell.key(key.Event{Name: "-", State: key.Press})
+	if got := shell.Model.Snapshot().HUD.Speed; got != 5 {
+		t.Fatalf("speed after decrease = %d, want 5", got)
+	}
+
+	var ops op.Ops
+	gtx := layout.Context{Ops: &ops, Constraints: layout.Exact(image.Pt(1280, 720))}
+	shell.speedUp.Click()
+	shell.hud(gtx, shell.Model.Snapshot())
+	if got := shell.Model.Snapshot().HUD.Speed; got != 6 {
+		t.Fatalf("speed after button increase = %d, want 6", got)
+	}
+	shell.speedDown.Click()
+	shell.hud(gtx, shell.Model.Snapshot())
+	if got := shell.Model.Snapshot().HUD.Speed; got != 5 {
+		t.Fatalf("speed after button decrease = %d, want 5", got)
+	}
+}
+
 func TestTeachRequestCarriesExactPendingIdentity(t *testing.T) {
 	var path string
 	var got TeachRequest

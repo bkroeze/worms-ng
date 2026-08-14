@@ -87,8 +87,8 @@ A passing run records evidence for all of these assertions:
 
 For each supported viewport, reviewers record:
 
-- keyboard focus is visible and `Space`, `Escape`, `1`–`9`, and all six direction
-  keys operate the setup/play/pause flow;
+- keyboard focus is visible and `Space`, `Escape`, `+`, `-`, `1`–`9`, and all
+  six direction keys operate the setup/play/pause flow;
 - no decision control or score is clipped or overlaps the board/HUD;
 - text and ownership cues remain readable without color alone (shape, labels, or
   contrast cues are present);

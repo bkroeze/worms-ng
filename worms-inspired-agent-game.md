@@ -139,6 +139,7 @@ Useful commands:
 | Key | Function |
 |---|---|
 | `1`–`9` | Set worm speed; 1 slowest, 7 default, 9 fastest |
+| `+` / `-` | Increase or decrease worm speed during play |
 | `ESC` | Freeze/unfreeze the game |
 | `G` | Toggle grid dots off/on; available at beginning of game |
 | `F` | Toggle persistent flashing for captured territories |
