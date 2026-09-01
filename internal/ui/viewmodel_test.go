@@ -1,8 +1,9 @@
 package ui
 
 import (
-	"gioui.org/f32"
 	"testing"
+
+	"gioui.org/f32"
 )
 
 func TestDirectionTeachingAndSpeedBounds(t *testing.T) {

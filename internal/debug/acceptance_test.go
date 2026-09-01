@@ -48,7 +48,11 @@ func TestDiagnosticRestoreIntoEmptyDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r2.Close()
+	defer func() {
+		if err := r2.Close(); err != nil {
+			t.Errorf("close restored reader: %v", err)
+		}
+	}()
 	g, err := r2.Game(ctx, "g1")
 	if err != nil {
 		t.Fatal(err)
@@ -72,7 +76,11 @@ func TestSQLiteBrainPageIsBoundedAndCarriesTotals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() {
+		if closeErr := s.Close(); closeErr != nil {
+			t.Errorf("close store: %v", closeErr)
+		}
+	}()
 	if _, err = s.CreateBrain(ctx, store.CreateBrainInput{ID: "large", Name: "large"}); err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +108,11 @@ func TestSQLiteBrainPageIsBoundedAndCarriesTotals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
+	defer func() {
+		if err := r.Close(); err != nil {
+			t.Errorf("close reader: %v", err)
+		}
+	}()
 	page, err := r.BrainPage(ctx, "large", 7, 51)
 	if err != nil {
 		t.Fatal(err)
@@ -152,7 +164,11 @@ func TestAPIReaderMatchesSQLiteBrain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sqlr.Close()
+	defer func() {
+		if err := sqlr.Close(); err != nil {
+			t.Errorf("close reader: %v", err)
+		}
+	}()
 	want, err := sqlr.Brain(ctx, "b1")
 	if err != nil {
 		t.Fatal(err)
@@ -194,7 +210,11 @@ func TestAPIReaderDiffResolvesBrainRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
+	defer func() {
+		if err := r.Close(); err != nil {
+			t.Errorf("close reader: %v", err)
+		}
+	}()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("content-type", "application/json")
 		var body any

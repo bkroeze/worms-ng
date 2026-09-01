@@ -64,7 +64,11 @@ func TestSQLitePersistenceAndResume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	}()
 	resumed, err := s.ResumeGame(ctx, game.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -84,7 +88,11 @@ func TestImmutableBrainAndCorruptPayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	}()
 	b, err := s.CreateBrain(ctx, CreateBrainInput{Name: "x"})
 	if err != nil {
 		t.Fatal(err)
@@ -119,7 +127,11 @@ func TestContextCancellationAndForeignKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	}()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err = s.CreateBrain(ctx, CreateBrainInput{Name: "cancelled"}); !errors.Is(err, context.Canceled) {
@@ -139,7 +151,11 @@ func TestListHydratesRecordsWithoutNestedConnectionDeadlock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	}()
 	tournament, err := s.CreateTournament(ctx, CreateTournamentInput{ID: "t1", Name: "cup"})
 	if err != nil {
 		t.Fatal(err)
@@ -174,7 +190,11 @@ func TestEventPayloadAndSnapshotHashValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	}()
 	game, err := s.CreateGame(ctx, CreateGameInput{ID: "g1"})
 	if err != nil {
 		t.Fatal(err)
@@ -225,7 +245,11 @@ func TestAppendEventsWithSnapshotIsAtomic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	}()
 	game, err := s.CreateGame(ctx, CreateGameInput{ID: "g1"})
 	if err != nil {
 		t.Fatal(err)
@@ -296,7 +320,11 @@ func TestParticipantSlotMigrationUpgrade(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	}()
 	if version, err := s.SchemaVersion(ctx); err != nil || version != 2 {
 		t.Fatalf("schema version=%d err=%v", version, err)
 	}
@@ -315,7 +343,11 @@ func TestMigrationFailureRollsBackSchemaAndBookkeeping(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close db: %v", err)
+		}
+	}()
 	initial, err := migrationFS.ReadFile("migrations/001_initial.sql")
 	if err != nil {
 		t.Fatal(err)
@@ -356,12 +388,20 @@ func TestConcurrentRepositoryWritersProduceOneCommittedSequence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer one.Close()
+	defer func() {
+		if err := one.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	}()
 	two, err := Open(ctx, path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer two.Close()
+	defer func() {
+		if err := two.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	}()
 	if _, err = one.CreateGame(ctx, CreateGameInput{ID: "g1"}); err != nil {
 		t.Fatal(err)
 	}
@@ -395,7 +435,11 @@ func TestBrainRuleCanonicalRoundTripAndQueryPlans(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	}()
 	b, err := s.CreateBrain(ctx, CreateBrainInput{ID: "b1", Name: "demo", Type: "NEW", Frozen: true})
 	if err != nil {
 		t.Fatal(err)
@@ -434,7 +478,7 @@ func TestBrainRuleCanonicalRoundTripAndQueryPlans(t *testing.T) {
 		for rows.Next() {
 			var id, parent, notused, d any
 			if e = rows.Scan(&id, &parent, &notused, &d); e != nil {
-				rows.Close()
+				_ = rows.Close()
 				t.Fatal(e)
 			}
 			detail = fmt.Sprint(d)
@@ -442,7 +486,7 @@ func TestBrainRuleCanonicalRoundTripAndQueryPlans(t *testing.T) {
 				found = true
 			}
 		}
-		rows.Close()
+		_ = rows.Close()
 		if !found {
 			t.Fatalf("query plan did not use index: %s (%s)", q, detail)
 		}
@@ -454,7 +498,11 @@ func TestSQLiteReadCancellationUsesTypedRepositoryError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() {
+		if closeErr := s.Close(); closeErr != nil {
+			t.Errorf("close store: %v", closeErr)
+		}
+	}()
 	if _, err = s.CreateGame(context.Background(), CreateGameInput{ID: "cancel-game"}); err != nil {
 		t.Fatal(err)
 	}
@@ -479,7 +527,11 @@ func TestVerifyEventChainBindsPersistedHead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() {
+		if closeErr := s.Close(); closeErr != nil {
+			t.Errorf("close store: %v", closeErr)
+		}
+	}()
 	g, err := s.CreateGame(context.Background(), CreateGameInput{ID: "head-game"})
 	if err != nil {
 		t.Fatal(err)
@@ -511,7 +563,11 @@ func TestCompleteGameScoresAreTransactional(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() {
+		if closeErr := s.Close(); closeErr != nil {
+			t.Errorf("close store: %v", closeErr)
+		}
+	}()
 	g, err := s.CreateGame(context.Background(), CreateGameInput{ID: "score-game", Participants: []Participant{{ID: "a", Payload: payload(t, nil)}, {ID: "b", Payload: payload(t, nil)}}})
 	if err != nil {
 		t.Fatal(err)
@@ -540,7 +596,11 @@ func TestPagedRulesProvenanceAndUsageQueries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() {
+		if closeErr := s.Close(); closeErr != nil {
+			t.Errorf("close store: %v", closeErr)
+		}
+	}()
 	b, err := s.CreateBrain(context.Background(), CreateBrainInput{ID: "query-brain", Name: "query"})
 	if err != nil {
 		t.Fatal(err)
@@ -570,7 +630,11 @@ func BenchmarkSQLiteEventAppend(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer s.Close()
+	defer func() {
+		if closeErr := s.Close(); closeErr != nil {
+			b.Errorf("close store: %v", closeErr)
+		}
+	}()
 	game, err := s.CreateGame(ctx, CreateGameInput{ID: "benchmark", RulesPayload: payload(b, map[string]any{})})
 	if err != nil {
 		b.Fatal(err)

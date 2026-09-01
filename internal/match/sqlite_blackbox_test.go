@@ -13,7 +13,11 @@ func TestSQLiteBlackBoxRestartAfterTransitionKeepsStateHash(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	}()
 	state := testState()
 	controllers := []Controller{NewRandomController(31), NewRandomController(32)}
 	m, err := NewMatch(ctx, Config{Store: st, Initial: state, Controllers: controllers, Seed: 31})

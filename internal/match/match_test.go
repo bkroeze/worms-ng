@@ -58,7 +58,11 @@ func TestRealStoreResumeVerifiesSnapshot(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	defer st.Close()
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	}()
 	s := testState()
 	c, e := NewScriptedController(protocol.Action{Kind: protocol.ActionMove, Direction: int(engine.East)})
 	if e != nil {
@@ -93,7 +97,11 @@ func TestObservationReportsCanonicalTrailOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	}()
 	s := testState()
 	from := s.Worms[0].Position
 	if err := s.InsertTrail(from, s.Neighbor(from, engine.East), "a"); err != nil {

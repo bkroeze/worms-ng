@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+
 	"worms.ng/internal/store"
 )
 
@@ -25,7 +26,11 @@ func TestSQLiteSharingPoliciesAndSourceImmutability(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	}()
 	if _, err = s.CreateBrain(ctx, store.CreateBrainInput{ID: "sources", Name: "sources"}); err != nil {
 		t.Fatal(err)
 	}

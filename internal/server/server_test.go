@@ -27,7 +27,11 @@ func TestVersionedEndpointsUseSQLiteAndServeEmbeddedAssets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
-	defer svc.Close()
+	defer func() {
+		if err := svc.Close(); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	}()
 	h := svc.Handler()
 	recorder := httptest.NewRecorder()
 	h.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
@@ -86,12 +90,18 @@ func TestGameContractAndRestartResume(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &acted); err != nil || acted.Game.Sequence != 1 || acted.Game.EventHash == "" {
 		t.Fatalf("bad act response: %s", rec.Body.String())
 	}
-	service.Close()
+	if err := service.Close(); err != nil {
+		t.Fatalf("close service: %v", err)
+	}
 	service, err = Open(db, testAssets())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer service.Close()
+	defer func() {
+		if err := service.Close(); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	}()
 	rec = httptest.NewRecorder()
 	service.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/games/g1/resume", nil))
 	if rec.Code != http.StatusOK {
@@ -116,7 +126,11 @@ func TestAbortGamePreservesHeadAndRejectsFurtherMutations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer svc.Close()
+	defer func() {
+		if err := svc.Close(); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	}()
 	post := func(path string, body any) *httptest.ResponseRecorder {
 		payload, err := json.Marshal(body)
 		if err != nil {
@@ -241,7 +255,11 @@ func TestAbortExtensionReturnsCurrentAuthoritativeState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer svc.Close()
+	defer func() {
+		if err := svc.Close(); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	}()
 	post := func(path, body string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
@@ -322,7 +340,11 @@ func TestOptionalExtensionRestartAndFogContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer svc.Close()
+	defer func() {
+		if err := svc.Close(); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	}()
 	rec := httptest.NewRecorder()
 	svc.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/games/fog-game/resume", nil))
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"team_winners"`) || strings.Contains(rec.Body.String(), `"variant"`) {
@@ -338,7 +360,11 @@ func TestBrainTournamentContracts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer svc.Close()
+	defer func() {
+		if err := svc.Close(); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	}()
 	call := func(method, path, payload string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(method, path, strings.NewReader(payload))
@@ -369,7 +395,11 @@ func TestCORSAllowlistAndETag(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer svc.Close()
+	defer func() {
+		if err := svc.Close(); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	}()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
 	req.Header.Set("Origin", "https://example.test")
 	rec := httptest.NewRecorder()
@@ -391,7 +421,11 @@ func TestMutationRequiresExplicitAPIVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer svc.Close()
+	defer func() {
+		if err := svc.Close(); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	}()
 	call := func(path, body string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
@@ -474,7 +508,11 @@ func TestTeachAppliesDecisionAndSurvivesRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer service.Close()
+	defer func() {
+		if err := service.Close(); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	}()
 	rec = httptest.NewRecorder()
 	service.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/games/teach-game/resume", nil))
 	if rec.Code != http.StatusOK {
@@ -500,7 +538,11 @@ func TestConcurrentActionsHaveSingleWinner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer svc.Close()
+	defer func() {
+		if err := svc.Close(); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	}()
 	create := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/games", strings.NewReader(`{"version":"v1","id":"concurrent","participants":[{"id":"w1"}]}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -525,9 +567,10 @@ func TestConcurrentActionsHaveSingleWinner(t *testing.T) {
 	close(statuses)
 	var ok, conflict int
 	for status := range statuses {
-		if status == http.StatusOK {
+		switch status {
+		case http.StatusOK:
 			ok++
-		} else if status == http.StatusConflict {
+		case http.StatusConflict:
 			conflict++
 		}
 	}

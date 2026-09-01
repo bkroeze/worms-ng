@@ -49,7 +49,11 @@ func TestControllerReturningAfterDeadlineTimesOutAndPersists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	defer func() {
+		if closeErr := st.Close(); closeErr != nil {
+			t.Errorf("close store: %v", closeErr)
+		}
+	}()
 	m, err := NewMatch(ctx, Config{
 		Store:       st,
 		Initial:     testState(),
@@ -95,15 +99,21 @@ func TestTerminalPersistenceFailureRestoresPendingState(t *testing.T) {
 	}
 	m, err := NewMatch(ctx, Config{Store: st, Initial: testState(), Deadline: time.Second, Now: func() time.Time { return clock }})
 	if err != nil {
-		st.Close()
+		if closeErr := st.Close(); closeErr != nil {
+			t.Errorf("close store: %v", closeErr)
+		}
 		t.Fatal(err)
 	}
 	clock = time.Unix(100, 0)
 	if _, err := m.Advance(ctx); err != nil {
-		st.Close()
+		if closeErr := st.Close(); closeErr != nil {
+			t.Errorf("close store: %v", closeErr)
+		}
 		t.Fatal(err)
 	}
-	st.Close()
+	if closeErr := st.Close(); closeErr != nil {
+		t.Fatalf("close store: %v", closeErr)
+	}
 	clock = clock.Add(2 * time.Second)
 	if _, err := m.Resolve(ctx); err == nil {
 		t.Fatal("Resolve succeeded after store close")

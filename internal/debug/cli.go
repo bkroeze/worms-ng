@@ -185,7 +185,9 @@ func Run(ctx context.Context, args []string, out, errout io.Writer) int {
 		if o.jsonOutput {
 			_ = writeVersioned(out, map[string]string{"usage": Usage})
 		} else if out != nil {
-			fmt.Fprintln(out, Usage)
+			if _, err := fmt.Fprintln(out, Usage); err != nil {
+				return ExitConnection
+			}
 		}
 		return ExitOK
 	}
@@ -208,7 +210,9 @@ func reportError(w io.Writer, e error, options ...cliOptions) int {
 		if jsonOutput {
 			_ = writeVersioned(w, map[string]any{"error": e.Error(), "code": code})
 		} else {
-			fmt.Fprintln(w, e)
+			if _, err := fmt.Fprintln(w, e); err != nil {
+				return ExitConnection
+			}
 		}
 	}
 	return code
@@ -241,8 +245,13 @@ func runWithReader(ctx context.Context, o cliOptions, rest []string, fn func(Rea
 			return reportError(errout, e, o)
 		}
 	}
-	defer r.Close()
 	if e = fn(r); e != nil {
+		if closeErr := r.Close(); closeErr != nil {
+			e = errors.Join(e, closeErr)
+		}
+		return reportError(errout, e, o)
+	}
+	if e = r.Close(); e != nil {
 		return reportError(errout, e, o)
 	}
 	return ExitOK
@@ -274,8 +283,8 @@ func runCommand(ctx context.Context, r Reader, cmd, sub string, args []string, o
 			if o.jsonOutput {
 				return writeVersioned(out, d)
 			}
-			fmt.Fprintf(out, "Brain diff %s -> %s\nrules_changed=%t lineage_changed=%t provenance_changed=%t payload_changed=%t\n", a, b, d.RulesChanged, d.LineageChanged, d.ProvenanceChanged, d.PayloadChanged)
-			return nil
+			_, err = fmt.Fprintf(out, "Brain diff %s -> %s\nrules_changed=%t lineage_changed=%t provenance_changed=%t payload_changed=%t\n", a, b, d.RulesChanged, d.LineageChanged, d.ProvenanceChanged, d.PayloadChanged)
+			return err
 		}
 	case "game":
 		switch sub {
@@ -418,29 +427,47 @@ func runBrainShow(ctx context.Context, r Reader, id string, o cliOptions, out io
 	return writeVersioned(out, payload)
 }
 func writeHumanBrain(out io.Writer, b Brain, versions []BrainVersion) error {
-	fmt.Fprintf(out, "Brain %s (%s)\n", b.ID, b.Name)
+	write := func(format string, args ...any) error {
+		_, err := fmt.Fprintf(out, format, args...)
+		return err
+	}
+	if err := write("Brain %s (%s)\n", b.ID, b.Name); err != nil {
+		return err
+	}
 	for _, v := range versions {
-		fmt.Fprintf(out, "Version %d id=%s hash=%s\n", v.Version, v.ID, v.Hash)
+		if err := write("Version %d id=%s hash=%s\n", v.Version, v.ID, v.Hash); err != nil {
+			return err
+		}
 		if v.Lineage.ParentVersionID != "" {
-			fmt.Fprintf(out, "  lineage parent=%s\n", v.Lineage.ParentVersionID)
+			if err := write("  lineage parent=%s\n", v.Lineage.ParentVersionID); err != nil {
+				return err
+			}
 		}
 		for _, ref := range v.References {
 			lower := strings.ToLower(ref)
 			if strings.Contains(lower, "event") || strings.Contains(lower, "learned") || strings.Contains(lower, "source") || strings.Contains(lower, "game") {
-				fmt.Fprintf(out, "  provenance %s\n", ref)
+				if err := write("  provenance %s\n", ref); err != nil {
+					return err
+				}
 			} else {
-				fmt.Fprintf(out, "  reference %s\n", ref)
+				if err := write("  reference %s\n", ref); err != nil {
+					return err
+				}
 			}
 		}
 		for _, use := range v.Usage {
-			fmt.Fprintf(out, "  rule_usage %s\n", use)
+			if err := write("  rule_usage %s\n", use); err != nil {
+				return err
+			}
 		}
 		rules := v.RulesDecoded
 		if len(rules) == 0 {
 			rules, _ = DecodeRules(v.Rules.Payload)
 		}
 		for _, rule := range rules {
-			fmt.Fprintf(out, "  mask=%02x pattern=%s action=%s diagram=%s\n", rule.Mask, rule.Pattern, rule.Action, rule.Diagram)
+			if err := write("  mask=%02x pattern=%s action=%s diagram=%s\n", rule.Mask, rule.Pattern, rule.Action, rule.Diagram); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -500,7 +527,7 @@ func runGameList(ctx context.Context, r Reader, o cliOptions, out io.Writer) err
 	}
 	return writeVersioned(out, gs)
 }
-func runExport(ctx context.Context, r Reader, o cliOptions, args []string, out io.Writer) error {
+func runExport(ctx context.Context, r Reader, o cliOptions, args []string, out io.Writer) (err error) {
 	if len(args) > 2 {
 		return fmt.Errorf("%w: diagnostic export [brain-id] [game-id]", ErrInvalid)
 	}
@@ -515,13 +542,17 @@ func runExport(ctx context.Context, r Reader, o cliOptions, args []string, out i
 	if e != nil {
 		return e
 	}
-	var w io.Writer = out
+	w := out
 	if o.out != "-" {
 		f, e := os.Create(o.out)
 		if e != nil {
 			return fmt.Errorf("%w: %v", ErrConnection, e)
 		}
-		defer f.Close()
+		defer func() {
+			if closeErr := f.Close(); err == nil {
+				err = closeErr
+			}
+		}()
 		w = f
 	}
 	return WriteDiagnostic(w, d)
@@ -558,12 +589,16 @@ func runImport(o cliOptions, args []string, out, errout io.Writer) int {
 		if err != nil {
 			return reportError(errout, fmt.Errorf("%w: %v", ErrConnection, err), o)
 		}
-		defer f.Close()
-		err = WriteDiagnostic(f, d)
-	} else {
-		err = WriteDiagnostic(out, d)
+		if err := WriteDiagnostic(f, d); err != nil {
+			_ = f.Close()
+			return reportError(errout, err, o)
+		}
+		if err := f.Close(); err != nil {
+			return reportError(errout, err, o)
+		}
+		return ExitOK
 	}
-	if err != nil {
+	if err := WriteDiagnostic(out, d); err != nil {
 		return reportError(errout, err, o)
 	}
 	return ExitOK

@@ -13,11 +13,13 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	_ "modernc.org/sqlite"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	_ "modernc.org/sqlite"
+
 	"worms.ng/internal/extension"
 )
 
@@ -185,15 +187,15 @@ func Open(ctx context.Context, filename string) (*Store, error) {
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 	if err = s.configure(ctx); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	if err = s.migrate(ctx); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	if err = s.ensureGameMoveCount(ctx); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	return s, nil
@@ -249,7 +251,7 @@ func (s *Store) ensureGameMoveCount(ctx context.Context) error {
 	if err != nil {
 		return classify(err, "games schema")
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var found bool
 	for rows.Next() {
 		var cid int
@@ -481,7 +483,7 @@ func (s *Store) ListBrains(ctx context.Context, o BrainListOptions) ([]Brain, er
 	if err != nil {
 		return nil, classify(err, "brain list")
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []Brain
 	for rows.Next() {
 		var b Brain
@@ -515,7 +517,7 @@ func (s *Store) CreateBrainVersion(ctx context.Context, in CreateBrainVersionInp
 	if err != nil {
 		return BrainVersion{}, classify(err, "brain version")
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var brainExists string
 	if err = tx.QueryRowContext(ctx, "SELECT id FROM brains WHERE id=?", in.BrainID).Scan(&brainExists); errors.Is(err, sql.ErrNoRows) {
 		return BrainVersion{}, fmt.Errorf("%w: brain %s", ErrNotFound, in.BrainID)
@@ -609,7 +611,7 @@ func (s *Store) ListBrainVersions(ctx context.Context, brainID string, o BrainLi
 	if err != nil {
 		return nil, classify(err, "brain version list")
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := []BrainVersion{}
 	for rows.Next() {
 		v, scanErr := s.scanBrainVersion(rows, "")
@@ -696,15 +698,19 @@ func (s *Store) BrainUsageCount(ctx context.Context, brainVersionID string) (int
 	return n, classify(err, "brain usage")
 }
 
-func (s *Store) ListGamesReferencingBrain(ctx context.Context, brainID string, o GameListOptions) ([]Game, error) {
+func (s *Store) ListGamesReferencingBrain(ctx context.Context, brainID string, o GameListOptions) (out []Game, err error) {
 	limit, offset := page(o.Limit, o.Offset)
 	rows, err := s.db.QueryContext(ctx, `SELECT g.id FROM games g JOIN brain_versions v ON v.id=g.brain_version_id
 		WHERE v.brain_id=? ORDER BY g.updated_at DESC,g.id LIMIT ? OFFSET ?`, brainID, limit, offset)
 	if err != nil {
 		return nil, classify(err, "brain references")
 	}
-	defer rows.Close()
-	var out []Game
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil && err == nil {
+			out = nil
+			err = classify(closeErr, "brain references")
+		}
+	}()
 	for rows.Next() {
 		var id string
 		if err = rows.Scan(&id); err != nil {
@@ -722,14 +728,18 @@ func (s *Store) ListGamesReferencingBrain(ctx context.Context, brainID string, o
 	return out, nil
 }
 
-func (s *Store) ListRules(ctx context.Context, o PageOptions) ([]Rules, error) {
+func (s *Store) ListRules(ctx context.Context, o PageOptions) (out []Rules, err error) {
 	limit, offset := page(o.Limit, o.Offset)
 	rows, err := s.db.QueryContext(ctx, "SELECT id,payload,hash,created_at FROM brain_rules ORDER BY created_at,id LIMIT ? OFFSET ?", limit, offset)
 	if err != nil {
 		return nil, classify(err, "rules list")
 	}
-	defer rows.Close()
-	var out []Rules
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil && err == nil {
+			out = nil
+			err = classify(closeErr, "rules list")
+		}
+	}()
 	for rows.Next() {
 		var r Rules
 		var p []byte
@@ -748,14 +758,18 @@ func (s *Store) ListRules(ctx context.Context, o PageOptions) ([]Rules, error) {
 	return out, nil
 }
 
-func (s *Store) ListProvenance(ctx context.Context, o PageOptions) ([]Provenance, error) {
+func (s *Store) ListProvenance(ctx context.Context, o PageOptions) (out []Provenance, err error) {
 	limit, offset := page(o.Limit, o.Offset)
 	rows, err := s.db.QueryContext(ctx, "SELECT id,payload,hash,created_at FROM brain_provenance ORDER BY created_at,id LIMIT ? OFFSET ?", limit, offset)
 	if err != nil {
 		return nil, classify(err, "provenance list")
 	}
-	defer rows.Close()
-	var out []Provenance
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil && err == nil {
+			out = nil
+			err = classify(closeErr, "provenance list")
+		}
+	}()
 	for rows.Next() {
 		var p Provenance
 		var raw []byte
@@ -782,7 +796,7 @@ func (s *Store) ListBrainUsage(ctx context.Context, versionID string, o PageOpti
 	if err != nil {
 		return nil, classify(err, "brain usage list")
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []BrainUsage
 	for rows.Next() {
 		var u BrainUsage
@@ -888,7 +902,7 @@ func (s *Store) CreateGame(ctx context.Context, in CreateGameInput) (Game, error
 	if e != nil {
 		return Game{}, classify(e, "game")
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if _, e = tx.ExecContext(ctx, "INSERT INTO games(id,brain_version_id,rules_payload,status,seed,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", id, nullString(in.BrainVersionID), in.RulesPayload, st, in.Seed, t, t); e != nil {
 		return Game{}, classify(e, "game")
 	}
@@ -931,7 +945,7 @@ func (s *Store) GetGame(ctx context.Context, id string) (Game, error) {
 	if e != nil {
 		return g, classify(e, "participant list")
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var p Participant
 		var bp sql.NullString
@@ -994,7 +1008,7 @@ func (s *Store) CompleteGame(ctx context.Context, id, status string, expectedSeq
 	if err != nil {
 		return classify(err, "game completion")
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var seq int64
 	var hash, current string
 	if err = tx.QueryRowContext(ctx, "SELECT sequence,event_hash,status FROM games WHERE id=?", id).Scan(&seq, &hash, &current); errors.Is(err, sql.ErrNoRows) {
@@ -1051,13 +1065,13 @@ func (s *Store) ListGames(ctx context.Context, o GameListOptions) ([]Game, error
 	for rows.Next() {
 		var id string
 		if e = rows.Scan(&id); e != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, classifyScan(e, "game list")
 		}
 		ids = append(ids, id)
 	}
 	if e = rows.Err(); e != nil {
-		rows.Close()
+		_ = rows.Close()
 		return nil, classify(e, "game list")
 	}
 	if e = rows.Close(); e != nil {
@@ -1082,7 +1096,7 @@ func (s *Store) AppendGameEvents(ctx context.Context, gameID string, expectedSeq
 	if e != nil {
 		return nil, classify(e, "event")
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var seq int64
 	var prev, status string
 	if e = tx.QueryRowContext(ctx, "SELECT sequence,event_hash,status FROM games WHERE id=?", gameID).Scan(&seq, &prev, &status); errors.Is(e, sql.ErrNoRows) {
@@ -1137,7 +1151,7 @@ func (s *Store) AppendGameEventsWithSnapshot(ctx context.Context, gameID string,
 	if err != nil {
 		return nil, classify(err, "event")
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var seq int64
 	var prev, status string
 	if err = tx.QueryRowContext(ctx, "SELECT sequence,event_hash,status FROM games WHERE id=?", gameID).Scan(&seq, &prev, &status); errors.Is(err, sql.ErrNoRows) {
@@ -1218,7 +1232,7 @@ func (s *Store) ListEvents(ctx context.Context, id string, after int64, limit in
 	if e != nil {
 		return nil, classify(e, "event list")
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []Event
 	for rows.Next() {
 		var x Event
@@ -1269,7 +1283,7 @@ func (s *Store) SaveSnapshotOptimistic(ctx context.Context, gameID string, expec
 	if err != nil {
 		return classify(err, "snapshot")
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var seq int64
 	var hash, status string
 	if err = tx.QueryRowContext(ctx, "SELECT sequence,event_hash,status FROM games WHERE id=?", gameID).Scan(&seq, &hash, &status); errors.Is(err, sql.ErrNoRows) {
@@ -1316,7 +1330,7 @@ func (s *Store) LoadLatestVerifiedSnapshot(ctx context.Context, gameID string) (
 	if err != nil {
 		return Snapshot{}, classify(err, "snapshot")
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var saw bool
 	for rows.Next() {
 		saw = true
@@ -1442,13 +1456,13 @@ func (s *Store) ListTournaments(ctx context.Context, o TournamentListOptions) ([
 	for rows.Next() {
 		var id string
 		if e = rows.Scan(&id); e != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, classifyScan(e, "tournament list")
 		}
 		ids = append(ids, id)
 	}
 	if e = rows.Err(); e != nil {
-		rows.Close()
+		_ = rows.Close()
 		return nil, classify(e, "tournament list")
 	}
 	if e = rows.Close(); e != nil {
@@ -1510,7 +1524,7 @@ func (s *Store) ListMatches(ctx context.Context, tournamentID string, o BrainLis
 	if e != nil {
 		return nil, classify(e, "match list")
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var ids []string
 	for rows.Next() {
 		var id string
@@ -1568,12 +1582,16 @@ func (s *Store) WithTx(ctx context.Context, fn func(*Tx) error) error {
 	w := &Tx{tx: tx}
 	defer func() {
 		if v := recover(); v != nil {
-			tx.Rollback()
+			if rollbackErr := tx.Rollback(); rollbackErr != nil {
+				panic(fmt.Errorf("transaction panic: %v; rollback: %w", v, rollbackErr))
+			}
 			panic(v)
 		}
 	}()
 	if e = fn(w); e != nil {
-		tx.Rollback()
+		if rollbackErr := tx.Rollback(); rollbackErr != nil {
+			return classify(errors.Join(e, rollbackErr), "transaction")
+		}
 		return classify(e, "transaction")
 	}
 	return classify(tx.Commit(), "transaction")
@@ -1643,7 +1661,7 @@ func (s *Store) InspectBrainPage(ctx context.Context, brainID, versionID, filter
 	if err != nil {
 		return nil, classify(err, "brain inspection")
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := make([]BrainVersion, 0, limit)
 	for rows.Next() {
 		v, scanErr := s.scanBrainVersion(rows, versionID)

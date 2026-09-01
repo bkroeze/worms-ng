@@ -79,6 +79,9 @@ test:
 fmt:
 	gofmt -w internal cmd
 
+lint:
+	golangci-lint run $(if $(CLIENT_BUILD_TAGS),--build-tags "$(CLIENT_BUILD_TAGS)")
+
 run-server: build-server
 	$(BIN_DIR)/worms-server
 smoke:

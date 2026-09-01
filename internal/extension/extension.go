@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"sort"
+
 	"worms.ng/internal/engine"
 )
 
@@ -34,7 +35,8 @@ type OneWayTrail struct {
 type Config struct {
 	Version             int                  `json:"version,omitempty"`
 	Enabled             bool                 `json:"enabled,omitempty"`
-	Width, Height       int                  `json:"width,omitempty"` // optional generated-world dimensions
+	Width               int                  `json:"width,omitempty"`  // optional generated-world dimensions
+	Height              int                  `json:"height,omitempty"` // optional generated-world dimensions
 	Seed                int64                `json:"seed,omitempty"`
 	Obstacles           []engine.Point       `json:"obstacles,omitempty"`
 	Holes               []engine.Point       `json:"holes,omitempty"`

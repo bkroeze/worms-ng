@@ -53,7 +53,11 @@ func TestSQLiteReaderReadOnlyAndHashes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
+	defer func() {
+		if closeErr := r.Close(); closeErr != nil {
+			t.Errorf("close reader: %v", closeErr)
+		}
+	}()
 	if _, err := r.Brain(context.Background(), "b1"); err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +82,11 @@ func TestDiagnosticRedactionRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
+	defer func() {
+		if closeErr := r.Close(); closeErr != nil {
+			t.Errorf("close reader: %v", closeErr)
+		}
+	}()
 	d, err := Export(context.Background(), r, "b1", "g1", true)
 	if err != nil {
 		t.Fatal(err)

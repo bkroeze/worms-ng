@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	_ "modernc.org/sqlite"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -21,6 +20,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	_ "modernc.org/sqlite"
+
 	"worms.ng/internal/engine"
 )
 
@@ -232,19 +234,27 @@ func OpenSQLite(ctx context.Context, filename string) (*SQLiteReader, error) {
 	db.SetMaxIdleConns(1)
 	r := &SQLiteReader{db: db}
 	if _, err = db.ExecContext(ctx, "PRAGMA query_only=ON"); err != nil {
-		db.Close()
+		if closeErr := db.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
 		return nil, fmt.Errorf("%w: %v", ErrConnection, err)
 	}
 	if err = r.checkSchema(ctx); err != nil {
-		db.Close()
+		if closeErr := db.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
 		return nil, err
 	}
 	if _, err = r.SchemaVersion(ctx); err != nil {
-		db.Close()
+		if closeErr := db.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
 		return nil, err
 	}
 	if err = db.PingContext(ctx); err != nil {
-		db.Close()
+		if closeErr := db.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
 		return nil, fmt.Errorf("%w: %v", ErrConnection, err)
 	}
 	return r, nil
@@ -305,7 +315,7 @@ func (r *SQLiteReader) Brain(ctx context.Context, id string) (BrainInspection, e
 	if e != nil {
 		return BrainInspection{}, fmt.Errorf("%w: %v", ErrConnection, e)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := BrainInspection{Brain: b}
 	for rows.Next() {
 		v, e := scanVersion(rows)
@@ -347,7 +357,7 @@ func (r *SQLiteReader) BrainPage(ctx context.Context, id string, limit, offset i
 	if err != nil {
 		return BrainPage{}, fmt.Errorf("%w: %v", ErrConnection, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	page := BrainPage{Brain: b, Total: total, Limit: limit, Offset: offset}
 	for rows.Next() {
 		v, err := scanVersion(rows)
@@ -580,7 +590,7 @@ func (r *SQLiteReader) Game(ctx context.Context, id string) (Game, error) {
 	if e != nil {
 		return g, fmt.Errorf("%w: %v", ErrConnection, e)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var p Participant
 		var bp sql.NullString
@@ -616,16 +626,22 @@ func (r *SQLiteReader) Games(ctx context.Context, brainID string) ([]Game, error
 	for rows.Next() {
 		var id string
 		if e = rows.Scan(&id); e != nil {
-			rows.Close()
+			if closeErr := rows.Close(); closeErr != nil {
+				e = errors.Join(e, closeErr)
+			}
 			return nil, fmt.Errorf("%w: %v", ErrConnection, e)
 		}
 		ids = append(ids, id)
 	}
 	if e = rows.Err(); e != nil {
-		rows.Close()
+		if closeErr := rows.Close(); closeErr != nil {
+			e = errors.Join(e, closeErr)
+		}
 		return nil, fmt.Errorf("%w: %v", ErrConnection, e)
 	}
-	rows.Close()
+	if e = rows.Close(); e != nil {
+		return nil, fmt.Errorf("%w: %v", ErrConnection, e)
+	}
 	var out []Game
 	for _, id := range ids {
 		g, e := r.Game(ctx, id)
@@ -655,7 +671,7 @@ func (r *SQLiteReader) Events(ctx context.Context, id string, after int64) ([]Ev
 	if e != nil {
 		return nil, fmt.Errorf("%w: %v", ErrConnection, e)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []Event
 	for rows.Next() {
 		var x Event
@@ -1215,7 +1231,7 @@ func RestoreDiagnostic(ctx context.Context, filename string, d Diagnostic) error
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrConnection, err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrConnection, err)
@@ -1379,7 +1395,7 @@ func (a *APIReader) SchemaVersion(ctx context.Context) (int, error) {
 	}
 	return 1, nil
 }
-func (a *APIReader) get(ctx context.Context, path string, dst any) error {
+func (a *APIReader) get(ctx context.Context, path string, dst any) (err error) {
 	if a == nil || a.BaseURL == "" {
 		return fmt.Errorf("%w: empty API URL", ErrInvalid)
 	}
@@ -1391,7 +1407,11 @@ func (a *APIReader) get(ctx context.Context, path string, dst any) error {
 	if e != nil {
 		return fmt.Errorf("%w: %v", ErrConnection, e)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}()
 	if resp.StatusCode == http.StatusNotFound {
 		return fmt.Errorf("%w: %s", ErrNotFound, path)
 	}

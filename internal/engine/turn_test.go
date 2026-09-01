@@ -32,8 +32,6 @@ func TestClassicRoundOrderStallsAtPendingSlot(t *testing.T) {
 	if s.Round != 1 {
 		t.Fatalf("round=%d want 1", s.Round)
 	}
-	if s.Worms[2].Position == s.Worms[0].Position { /* co-location is allowed; verify it acted by edge */
-	}
 	if len(s.Trails) != 2 {
 		t.Fatalf("trails=%d want 2", len(s.Trails))
 	}

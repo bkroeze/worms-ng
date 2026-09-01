@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
 	"worms.ng/internal/engine"
 	"worms.ng/internal/extension"
 	"worms.ng/internal/planner"
@@ -97,11 +98,15 @@ func OpenWithOptions(databasePath string, assets fs.FS, options Options) (*Servi
 		s.origins[strings.TrimSpace(origin)] = true
 	}
 	if _, err = s.db.Exec(`CREATE TABLE IF NOT EXISTS server_checks (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`); err != nil {
-		d.Close()
+		if closeErr := d.Close(); closeErr != nil {
+			return nil, errors.Join(err, closeErr)
+		}
 		return nil, err
 	}
 	if _, err = s.db.Exec(`INSERT INTO server_checks DEFAULT VALUES`); err != nil {
-		d.Close()
+		if closeErr := d.Close(); closeErr != nil {
+			return nil, errors.Join(err, closeErr)
+		}
 		return nil, err
 	}
 	return s, nil
@@ -877,18 +882,25 @@ func (s *Service) listGames(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var id string
 		if e = rows.Scan(&id); e != nil {
-			rows.Close()
+			if closeErr := rows.Close(); closeErr != nil {
+				e = errors.Join(e, closeErr)
+			}
 			serverError(w, e)
 			return
 		}
 		ids = append(ids, id)
 	}
 	if e = rows.Err(); e != nil {
-		rows.Close()
+		if closeErr := rows.Close(); closeErr != nil {
+			e = errors.Join(e, closeErr)
+		}
 		serverError(w, e)
 		return
 	}
-	rows.Close()
+	if e = rows.Close(); e != nil {
+		serverError(w, e)
+		return
+	}
 	gs := make([]store.Game, 0, len(ids))
 	for _, id := range ids {
 		g, ge := s.data.GetGame(r.Context(), id)
@@ -1605,7 +1617,8 @@ func (s *Service) gameOperation(w http.ResponseWriter, r *http.Request, id, op s
 		return
 	}
 	var ep store.EventInput
-	if op == "act" {
+	switch op {
+	case "act":
 		var action protocol.Action
 		if in.Action != nil {
 			action = *in.Action
@@ -1644,7 +1657,7 @@ func (s *Service) gameOperation(w http.ResponseWriter, r *http.Request, id, op s
 			}
 			ep = store.EventInput{Type: "resigned", Payload: eventPayload(map[string]any{"worm_id": in.WormID})}
 		}
-	} else if op == "tick" {
+	case "tick":
 		var advanced []engine.Event
 		if extended {
 			advanced, e = extState.AdvanceRound()
@@ -1661,7 +1674,7 @@ func (s *Service) gameOperation(w http.ResponseWriter, r *http.Request, id, op s
 			payload["state"] = stateJSON(st)
 		}
 		ep = store.EventInput{Type: "tick", Payload: eventPayload(payload)}
-	} else if op == "teach" {
+	case "teach":
 		wormID, mask, request, direction, raw, err := teachingDecision(in)
 		if err != nil {
 			writeAPIError(w, 400, "invalid_teach", err.Error(), nil)
@@ -1683,7 +1696,7 @@ func (s *Service) gameOperation(w http.ResponseWriter, r *http.Request, id, op s
 			extState.Base = st
 		}
 		ep = store.EventInput{Type: "taught", Payload: raw}
-	} else {
+	default:
 		writeAPIError(w, 400, "invalid_operation", "unsupported game operation", nil)
 		return
 	}
@@ -1990,14 +2003,18 @@ func (s *Service) shareExperiment(w http.ResponseWriter, r *http.Request) {
 		mapStoreError(w, e)
 		return
 	}
-	metrics := map[string]any{"derived": len(out.Derived), "versions": len(versions), "changes": 0, "additions": 0, "removals": 0}
+	changes, additions, removals := 0, 0, 0
+	metrics := map[string]any{"derived": len(out.Derived), "versions": len(versions), "changes": changes, "additions": additions, "removals": removals}
 	provenance := make([]sharing.Provenance, 0, len(out.Derived))
 	for _, d := range out.Derived {
-		metrics["changes"] = metrics["changes"].(int) + len(d.Changes)
-		metrics["additions"] = metrics["additions"].(int) + len(d.Additions)
-		metrics["removals"] = metrics["removals"].(int) + len(d.Removals)
+		changes += len(d.Changes)
+		additions += len(d.Additions)
+		removals += len(d.Removals)
 		provenance = append(provenance, d.Provenance)
 	}
+	metrics["changes"] = changes
+	metrics["additions"] = additions
+	metrics["removals"] = removals
 	versionJSONs := make([]any, 0, len(versions))
 	for _, v := range versions {
 		versionJSONs = append(versionJSONs, versionJSON(v))
@@ -2468,18 +2485,25 @@ func (s *Service) tournamentsRoute(w http.ResponseWriter, r *http.Request, p []s
 			for rows.Next() {
 				var id string
 				if e = rows.Scan(&id); e != nil {
-					rows.Close()
+					if closeErr := rows.Close(); closeErr != nil {
+						e = errors.Join(e, closeErr)
+					}
 					serverError(w, e)
 					return
 				}
 				ids = append(ids, id)
 			}
 			if e = rows.Err(); e != nil {
-				rows.Close()
+				if closeErr := rows.Close(); closeErr != nil {
+					e = errors.Join(e, closeErr)
+				}
 				serverError(w, e)
 				return
 			}
-			rows.Close()
+			if e = rows.Close(); e != nil {
+				serverError(w, e)
+				return
+			}
 			ts := make([]store.Tournament, 0, len(ids))
 			for _, id := range ids {
 				t, te := s.data.GetTournament(r.Context(), id)
@@ -2567,18 +2591,25 @@ func (s *Service) listMatches(w http.ResponseWriter, r *http.Request, tid string
 	for rows.Next() {
 		var id string
 		if e = rows.Scan(&id); e != nil {
-			rows.Close()
+			if closeErr := rows.Close(); closeErr != nil {
+				e = errors.Join(e, closeErr)
+			}
 			serverError(w, e)
 			return
 		}
 		ids = append(ids, id)
 	}
 	if e = rows.Err(); e != nil {
-		rows.Close()
+		if closeErr := rows.Close(); closeErr != nil {
+			e = errors.Join(e, closeErr)
+		}
 		serverError(w, e)
 		return
 	}
-	rows.Close()
+	if e = rows.Close(); e != nil {
+		serverError(w, e)
+		return
+	}
 	ms := make([]store.Match, 0, len(ids))
 	for _, id := range ids {
 		m, me := s.data.GetMatch(r.Context(), id)

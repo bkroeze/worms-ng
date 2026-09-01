@@ -189,7 +189,9 @@ func (m *SessionManager) Request(ctx context.Context, credentials Credentials, r
 
 	action, err := policy.Decide(ctx, request)
 	if err != nil {
-		m.Disconnect(credentials, err.Error())
+		if _, disconnectErr := m.Disconnect(credentials, err.Error()); disconnectErr != nil {
+			return protocol.DecisionOutcome{}, err
+		}
 		return protocol.DecisionOutcome{}, err
 	}
 	return m.Submit(credentials, protocol.DecisionResponse{Version: protocol.SchemaVersion, DecisionID: request.DecisionID, Action: action})

@@ -203,7 +203,7 @@ func TestPauseQueuedDuringAutonomousRequestCommitsImmediatelyAfterIt(t *testing.
 	pauseFinished := make(chan struct{})
 	pauseCalls := 0
 	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		body := `{"version":"v1"}`
+		var body string
 		switch r.URL.Path {
 		case "/api/v1/games/g/tick":
 			close(tickStarted)
@@ -262,7 +262,7 @@ func TestAbortQueuedDuringAutonomousRequestUsesSettledHeadAndResetsGame(t *testi
 	abortFinished := make(chan struct{})
 	abortCalls := 0
 	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		body := `{"version":"v1"}`
+		var body string
 		switch r.URL.Path {
 		case "/api/v1/games/g/tick":
 			close(tickStarted)
@@ -320,7 +320,7 @@ func TestAbortQueuedDuringAutonomousRequestUsesSettledHeadAndResetsGame(t *testi
 
 func TestSixDirectionsHaveKeyboardAndPointerPaths(t *testing.T) {
 	keys := []string{"D", "X", "C", "A", "Q", "Z"}
-	points := []f32.Point{{1, 0}, {.5, .866}, {-.5, .866}, {-1, 0}, {-.5, -.866}, {.5, -.866}}
+	points := []f32.Point{{X: 1, Y: 0}, {X: .5, Y: .866}, {X: -.5, Y: .866}, {X: -1, Y: 0}, {X: -.5, Y: -.866}, {X: .5, Y: -.866}}
 	for direction := range 6 {
 		got, ok := DirectionFromKey(keys[direction])
 		if !ok || int(got) != direction {

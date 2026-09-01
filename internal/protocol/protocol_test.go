@@ -1,15 +1,13 @@
 package protocol
 
 import (
-	"strings"
-	"testing"
-	"time"
-)
-import (
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
+	"testing"
+	"time"
 )
 
 func TestFixtureRoundTripPreservesEveryObservationField(t *testing.T) {

@@ -31,7 +31,11 @@ func TestSeededTournamentStoreResumeMetrics(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	defer st.Close()
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	}()
 	s := blockedState()
 	_ = s.ConfigureControllers([]engine.ControllerKind{engine.ControllerAuto, engine.ControllerAuto}, 1)
 	tm, e := NewTournament(ctx, Config{Store: st, Name: "t", State: s, Participants: []Participant{{ID: "a"}, {ID: "b"}}, Rounds: 1, Seed: 4, MaxTurns: 64})
@@ -86,7 +90,11 @@ func TestTurnCapStoresIncompleteReportWithoutWinner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	}()
 	s := engine.NewClassic([]engine.Worm{{ID: "a"}, {ID: "b"}})
 	_ = s.ConfigureControllers([]engine.ControllerKind{engine.ControllerAuto, engine.ControllerAuto}, 2)
 	tm, err := NewTournament(ctx, Config{Store: st, Name: "cap", State: s, Participants: []Participant{{ID: "a"}, {ID: "b"}}, Rounds: 1, Seed: 9, MaxTurns: 1})

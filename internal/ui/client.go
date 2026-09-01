@@ -615,12 +615,12 @@ func (c *HTTPClient) endpoint(path string) string {
 	return c.baseURL + "/api/" + c.version + "/" + strings.TrimLeft(path, "/")
 }
 
-func (c *HTTPClient) get(ctx context.Context, path string, dst any, resources ...resource) (uint64, error) {
+func (c *HTTPClient) get(ctx context.Context, path string, dst any, resources ...resource) (seq uint64, err error) {
 	r := resourceGame
 	if len(resources) > 0 {
 		r = resources[0]
 	}
-	seq := c.next(r)
+	seq = c.next(r)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint(path), nil)
 	if err != nil {
 		return seq, err
@@ -630,7 +630,11 @@ func (c *HTTPClient) get(ctx context.Context, path string, dst any, resources ..
 	if err != nil {
 		return seq, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if closeErr := resp.Body.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("close response body: %w", closeErr)
+		}
+	}()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return seq, decodeAPIError(resp)
 	}
@@ -640,8 +644,8 @@ func (c *HTTPClient) get(ctx context.Context, path string, dst any, resources ..
 	return seq, nil
 }
 
-func (c *HTTPClient) do(ctx context.Context, method, path string, body any, dst any, r resource) (uint64, error) {
-	seq := c.next(r)
+func (c *HTTPClient) do(ctx context.Context, method, path string, body any, dst any, r resource) (seq uint64, err error) {
+	seq = c.next(r)
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return seq, err
@@ -656,7 +660,11 @@ func (c *HTTPClient) do(ctx context.Context, method, path string, body any, dst 
 	if err != nil {
 		return seq, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if closeErr := resp.Body.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("close response body: %w", closeErr)
+		}
+	}()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return seq, decodeAPIError(resp)
 	}

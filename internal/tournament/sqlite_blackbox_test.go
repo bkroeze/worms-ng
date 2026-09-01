@@ -17,7 +17,11 @@ func TestSQLiteBlackBoxResumesActiveRoundWithoutDuplicate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	}()
 	state := engine.NewClassic([]engine.Worm{{ID: "a"}, {ID: "b"}})
 	if err := state.ConfigureControllers([]engine.ControllerKind{engine.ControllerAuto, engine.ControllerAuto}, 17); err != nil {
 		t.Fatal(err)

@@ -198,7 +198,7 @@ func (s *Shell) frame(gtx layout.Context) {
 	event.Op(gtx.Ops, &s.keyTag)
 	key.InputHintOp{Tag: &s.keyTag, Hint: key.HintText}.Add(gtx.Ops)
 	if !s.keyboardFocused {
-		gtx.Source.Execute(key.FocusCmd{Tag: &s.keyTag})
+		gtx.Execute(key.FocusCmd{Tag: &s.keyTag})
 		s.keyboardFocused = true
 	}
 	filters := []event.Filter{
@@ -211,7 +211,7 @@ func (s *Shell) frame(gtx layout.Context) {
 		key.Filter{Focus: &s.keyTag, Name: ""},
 	}
 	for {
-		ev, ok := gtx.Source.Event(filters...)
+		ev, ok := gtx.Event(filters...)
 		if !ok {
 			break
 		}
@@ -1626,7 +1626,7 @@ func (s *Shell) board(gtx layout.Context, v AppView) layout.Dimensions {
 	}
 	s.renderCapture(gtx, g, v)
 	for {
-		ev, ok := gtx.Source.Event(pointer.Filter{Target: &s.pointerTag, Kinds: pointer.Press | pointer.Release | pointer.Cancel})
+		ev, ok := gtx.Event(pointer.Filter{Target: &s.pointerTag, Kinds: pointer.Press | pointer.Release | pointer.Cancel})
 		if !ok {
 			break
 		}

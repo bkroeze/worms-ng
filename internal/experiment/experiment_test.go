@@ -37,7 +37,11 @@ func TestSQLiteDeterministicResumeNoDuplicateMatches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() {
+		if closeErr := s.Close(); closeErr != nil {
+			t.Errorf("close store: %v", closeErr)
+		}
+	}()
 	calls := 0
 	cfg := fakeConfig(s, &calls)
 	first, err := Run(ctx, cfg)
@@ -81,7 +85,11 @@ func TestClassicBaselineUsesRealSQLiteTournamentRunner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() {
+		if closeErr := s.Close(); closeErr != nil {
+			t.Errorf("close store: %v", closeErr)
+		}
+	}()
 	cfg := Config{
 		Name: "classic", Seed: 3, State: classicExperimentState(), Store: s,
 		Participants: []Participant{{ID: "a"}, {ID: "b"}},
@@ -157,7 +165,11 @@ func TestSQLiteFreezeUsesImmutableBrainVersionIDs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() {
+		if closeErr := s.Close(); closeErr != nil {
+			t.Errorf("close store: %v", closeErr)
+		}
+	}()
 	if _, err := s.CreateBrain(ctx, store.CreateBrainInput{ID: "brain-a", Name: "a"}); err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +214,11 @@ func TestSQLiteActiveExperimentMatchResumesRunner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() {
+		if closeErr := s.Close(); closeErr != nil {
+			t.Errorf("close store: %v", closeErr)
+		}
+	}()
 	calls := 0
 	cfg := Config{
 		ID: "active-regression", Name: "active", Seed: 11, State: classicExperimentState(), Store: s,
@@ -256,7 +272,11 @@ func TestSQLiteDerivedIDsAreRecipientScoped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() {
+		if closeErr := s.Close(); closeErr != nil {
+			t.Errorf("close store: %v", closeErr)
+		}
+	}()
 	if _, err := s.CreateBrain(ctx, store.CreateBrainInput{ID: "brain-one", Name: "one"}); err != nil {
 		t.Fatal(err)
 	}

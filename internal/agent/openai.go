@@ -90,7 +90,7 @@ var actionJSONSchema = map[string]any{
 	},
 }
 
-func (a *OpenAIAdapter) Decide(ctx context.Context, request protocol.DecisionRequest) (protocol.Action, error) {
+func (a *OpenAIAdapter) Decide(ctx context.Context, request protocol.DecisionRequest) (action protocol.Action, err error) {
 	if err := request.Validate(); err != nil {
 		return protocol.Action{}, fmt.Errorf("invalid LLM request: %w", err)
 	}
@@ -117,7 +117,11 @@ func (a *OpenAIAdapter) Decide(ctx context.Context, request protocol.DecisionReq
 	if err != nil {
 		return protocol.Action{}, fmt.Errorf("LLM request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if closeErr := resp.Body.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("close LLM response: %w", closeErr)
+		}
+	}()
 	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if err != nil {
 		return protocol.Action{}, fmt.Errorf("read LLM response: %w", err)

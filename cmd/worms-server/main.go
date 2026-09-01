@@ -36,7 +36,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("open service: %v", err)
 	}
-	defer service.Close()
+	defer func() {
+		if err := service.Close(); err != nil {
+			log.Printf("close service: %v", err)
+		}
+	}()
 
 	httpServer := &http.Server{Addr: *address, Handler: service.Handler()}
 	stopped := make(chan os.Signal, 1)

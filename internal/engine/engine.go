@@ -271,8 +271,6 @@ func newState(width, height int, top Topology, mode RulesMode, worms []Worm) Sta
 		if s.Worms[i].Controller == "" {
 			s.Worms[i].Controller = ControllerNew
 		}
-		if s.Worms[i].Alive == false && ws[i].ID != "" { /* preserve explicit death */
-		}
 	}
 	return s
 }

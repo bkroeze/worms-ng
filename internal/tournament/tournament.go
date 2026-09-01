@@ -150,17 +150,17 @@ func (t *Tournament) Run(ctx context.Context) (Report, error) {
 			var x store.Match
 			var p []byte
 			if err := rows.Scan(&x.ID, &x.TournamentID, &x.GameID, &x.Round, &x.Status, &p, &x.CreatedAt, &x.UpdatedAt); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return r, err
 			}
 			x.Payload = append([]byte(nil), p...)
 			existing = append(existing, x)
 		}
 		if err := rows.Err(); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return r, err
 		}
-		rows.Close()
+		_ = rows.Close()
 	}
 	stored := map[int]bool{}
 	active := map[int]store.Match{}
